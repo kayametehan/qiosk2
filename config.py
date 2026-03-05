@@ -1,6 +1,6 @@
 """
-Kişisel Asistan Bot - Yapılandırma Dosyası
-Tüm sabitler, hedefler ve ayarlar burada tanımlı.
+Kişisel Asistan Bot - Yapılandırma
+Tamamen sohbet odaklı, tam yerel erişimli AI ajan.
 """
 
 import os
@@ -9,24 +9,25 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-# ─── Bot Token'ları ───────────────────────────────────────
+# ─── Token'lar ────────────────────────────────────────────
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
 TELEGRAM_USER_ID = int(os.getenv("TELEGRAM_USER_ID", "0"))
 
-# ─── AI Model Ayarları ────────────────────────────────────
+# ─── AI Model ─────────────────────────────────────────────
 AI_MODEL = "openai/gpt-4o-mini"
 AI_BASE_URL = "https://models.github.ai/inference"
 
-# ─── Kişisel Hedefler ────────────────────────────────────
+# ─── Ajan Ayarları ─────────────────────────────────────────
+MAX_AGENT_STEPS = 15  # Bir görevde maksimum adım sayısı
+AGENT_TIMEOUT = 120   # Saniye cinsinden timeout
+
+# ─── Kişisel Hedefler ─────────────────────────────────────
 HEDEFLER = {
     "kilo": {
         "hedef_kg": 75.0,
         "aciklama": "75 kg'a düşmek",
-        "kisitlamalar": [
-            "Yumurta yemez",
-            "Karamelli protein tozu var",
-        ],
+        "kisitlamalar": ["Yumurta yemez", "Karamelli protein tozu var"],
     },
     "sat": {
         "sinav_tarihi": date(2026, 3, 14),
@@ -38,7 +39,7 @@ HEDEFLER = {
     },
 }
 
-# ─── Hatırlatma Saatleri (saat, dakika) ───────────────────
+# ─── Hatırlatma Saatleri ───────────────────────────────────
 HATIRLATMALAR = {
     "sabah_plani": (8, 0),
     "ders_hatirlatma_1": (10, 0),
@@ -48,33 +49,39 @@ HATIRLATMALAR = {
     "gun_sonu_ozet": (22, 0),
 }
 
-# ─── Pomodoro Ayarları ────────────────────────────────────
+# ─── Pomodoro ──────────────────────────────────────────────
 POMODORO_CALISMA_DK = 25
 POMODORO_MOLA_DK = 5
 
-# ─── Veritabanı ──────────────────────────────────────────
+# ─── Veritabanı ───────────────────────────────────────────
 DB_PATH = os.path.join(os.path.dirname(__file__), "asistan.db")
 
-# ─── AI System Prompt ────────────────────────────────────
-SYSTEM_PROMPT = """Sen bir kişisel asistan botsun. Tamamen Türkçe konuşuyorsun. 
-Kullanıcının şu hedefleri var:
+# ─── System Prompt ─────────────────────────────────────────
+SYSTEM_PROMPT = """Sen benim kişisel AI asistanımsın. Bilgisayarıma tam erişimin var.
+Türkçe konuşuyorsun. Samimi, doğal ve arkadaşça davranıyorsun.
 
-1. 🏋️ KİLO VERME: 75 kg hedefi var. Yumurta yiyemez, karamelli protein tozu mevcut.
-   Yüksek proteinli, düşük kalorili yemek önerilerinde bulun. Protein tozu tariflerini öner.
+BENİM HEDEFLER:
+1. 🏋️ 75 kg hedefi (yumurta yemem, karamelli protein tozum var)
+2. 📚 CENT-S sınavı: 12 Mart 2026 ({cents_kalan})
+3. 📚 SAT sınavı: 14 Mart 2026 ({sat_kalan})
 
-2. 📚 CENT-S SINAVI: 12 Mart 2026'da. Bu sınav daha yakın, öncelikli.
+BUGÜN: {tarih}
 
-3. 📚 SAT SINAVI: 14 Mart 2026'da.
+SENİN YETENEKLERİN:
+- İnternette arama yapabilirsin (oteller, restoranlar, bilgi, her şey)
+- Web sayfalarını okuyabilirsin (yorumlar, fiyatlar, detaylar)
+- Bilgisayardaki dosyaları okuyup yazabilirsin
+- Klasörleri listeleyebilirsin
+- Terminal komutları çalıştırabilirsin
+- Uygulama ve URL açabilirsin
+- Kilo, çalışma, görev takibi yapabilirsin
 
-Bugünün tarihi: {tarih}
-CENT-S sınavına kalan gün: {cents_kalan}
-SAT sınavına kalan gün: {sat_kalan}
-
-Kurallar:
-- Kısa, motive edici ve samimi cevaplar ver
-- Emoji kullan ama abartma  
-- Pratik ve uygulanabilir öneriler sun
-- Sınav yakınsa stres yapmadan motive et
-- Diyet önerilerinde yumurtasız tarifler ver, protein tozu kullanımını teşvik et
-- Cevaplarını Telegram mesajı formatında tut (kısa paragraflar, maddeler)
+ÇALIŞMA PRENSİPLERİN:
+- Kullanıcı bir şey istediğinde, gerekli tüm adımları KENDIN planla ve uygula
+- Bir araştırma görevi geldiğinde: ara → sayfaları oku → karşılaştır → en iyi sonuçları sun
+- Tek seferde birden fazla tool çağrısı yapabilirsin, karmaşık görevleri adım adım çöz
+- Her adımda ne yaptığını kısaca açıkla
+- Sonuçları düzenli ve okunabilir şekilde sun
+- Normal sohbetlerde tool çağırma, sadece doğal cevap ver
+- Kısa, net, emoji'li ama abartısız mesajlar yaz
 """

@@ -1,122 +1,78 @@
-# 🤖 Kişisel Asistan Telegram Botu
+# 🤖 Kişisel Asistan Telegram Botu — AI Ajan
 
-AI destekli, haftalık plan oluşturan ve hedeflerini takip eden kişisel Telegram asistanı.
+Komut yok, sadece doğal konuş. Bot her şeyi anlar ve yapar.
+İnternette arar, dosyalarını yönetir, bilgisayarını kontrol eder.
 
-## 🎯 Özellikler
+## 🧠 Nasıl Çalışır?
 
-- **📅 AI ile Günlük Plan** — GPT-4o-mini ile kişiselleştirilmiş günlük program
-- **⚖️ Kilo Takibi** — Günlük kilo kaydı, trend analizi, hedef takibi
-- **📚 Çalışma Takibi** — SAT & CENT-S sınavlarına çalışma kaydı ve istatistik
-- **🍽️ Diyet Önerileri** — Yumurtasız, protein tozlu öğün planları (AI ile)
-- **⏱️ Pomodoro Zamanlayıcı** — 25dk çalış / 5dk mola döngüsü
-- **📋 Görev Yönetimi** — Günlük görev ekleme, tamamlama, erteleme
-- **🔔 Otomatik Hatırlatmalar** — Sabah planı, ders hatırlatması, öğün bildirimi, gün sonu özeti
-- **🤖 AI Sohbet** — Doğal dilde soru sorma, motivasyon, tavsiye alma
+Normal mesaj atarsın, AI anlayıp gerekli aksiyonları **kendisi** alır:
+
+| Sen yazarsın | Bot yapar |
+|---|---|
+| "82 kiloyum" | ⚖️ Kilo kaydeder, hedefe kalan farkı söyler |
+| "1 saat SAT çalıştım" | 📚 Çalışmayı kaydeder, istatistik gösterir |
+| "bugün ne yapayım" | 📅 AI ile günlük plan oluşturur |
+| "ne yesem" | 🍽️ Yumurtasız, proteinli öğün önerir |
+| "nasıl gidiyorum" | 📈 Kilo, çalışma, sınav özeti çıkarır |
+| "İstanbul'da güzel otel bul" | 🔍 İnternette arar, sayfaları okur, karşılaştırır |
+| "masaüstündeki dosyaları göster" | 📁 Bilgisayardaki dosyaları listeler |
+| "hava durumuna bak" | 🌤️ İnternetten hava durumu çeker |
+| "spotify aç" | 🚀 Uygulamayı açar |
+
+## 🔧 Yetenekleri
+
+- **🔍 Web Arama** — DuckDuckGo ile her şeyi arar
+- **📄 Sayfa Okuma** — Web sayfalarını okur (fiyatlar, yorumlar, bilgi)
+- **📁 Dosya Yönetimi** — Dosya okur, yazar, klasör listeler
+- **💻 Terminal** — Sistem komutları çalıştırır
+- **🚀 Uygulama** — URL/uygulama açar
+- **⚖️ Kilo Takibi** — Kayıt, trend, hedef analizi
+- **📚 Çalışma Takibi** — SAT & CENT-S seans kaydı
+- **📋 Görev Yönetimi** — Yapılacaklar listesi
+- **⏱️ Pomodoro** — 25dk/5dk zamanlayıcı
+- **🔔 Hatırlatmalar** — Sabah plan, ders, öğün, gün sonu
+- **🤖 Çok Adımlı Ajan** — Karmaşık görevleri adım adım çözer
 
 ## 🚀 Kurulum
 
-### 1. Gereksinimler
-- Python 3.10+
-- Telegram Bot Token (@BotFather'dan)
-- GitHub Personal Access Token (models:read scope)
-
-### 2. Bağımlılıkları Kur
+### 1. Bağımlılıkları Kur
 ```bash
 pip install -r requirements.txt
 ```
 
-### 3. .env Dosyasını Oluştur
+### 2. .env Dosyasını Ayarla
 ```bash
 copy .env.example .env
 ```
 
-`.env` dosyasını düzenle:
+Düzenle:
 ```
-TELEGRAM_BOT_TOKEN=123456:ABC-DEF...
-GITHUB_TOKEN=github_pat_...
-TELEGRAM_USER_ID=123456789
+TELEGRAM_BOT_TOKEN=...    # @BotFather'dan al
+GITHUB_TOKEN=...          # github.com/settings/tokens → models:read
+TELEGRAM_USER_ID=...      # Botu başlat, /id yaz, öğren
 ```
 
-**Telegram Bot Token:**
-1. Telegram'da [@BotFather](https://t.me/BotFather) ile konuş
-2. `/newbot` yaz ve adımları takip et
-3. Token'ı kopyala
-
-**GitHub Token:**
-1. [github.com/settings/tokens](https://github.com/settings/tokens) adresine git
-2. "Generate new token (classic)" → `models:read` scope'u seç
-3. Token'ı kopyala
-
-**Telegram User ID:**
-1. Botu başlat, `/id` komutunu gönder
-2. Gösterilen ID'yi `.env` dosyasına yaz
-
-### 4. Botu Başlat
+### 3. Çalıştır
 ```bash
 python main.py
 ```
+Windows'ta: `start_bot.bat` çift tıkla
 
-## 📱 Komutlar
-
-| Komut | Açıklama |
-|-------|----------|
-| `/basla` | Karşılama + hedef özeti |
-| `/plan` | AI ile bugünün planı |
-| `/hafta` | Haftalık özet tablosu |
-| `/kilo <değer>` | Kilo kaydet (ör: `/kilo 81.5`) |
-| `/calis <ders> <dk>` | Çalışma kaydet (ör: `/calis sat 45`) |
-| `/ogun` | AI öğün önerisi |
-| `/ozet` | Günlük ilerleme özeti |
-| `/sor <soru>` | AI'a soru sor |
-| `/pomodoro` | Pomodoro zamanlayıcı |
-| `/gorevler` | Görev listesi |
-| `/gorev_ekle <metin>` | Yeni görev ekle |
-| `/tartil` | Hızlı kilo girişi (butonlarla) |
-| `/tavsiye <ders>` | Çalışma tavsiyesi |
-| `/id` | Telegram ID'ni öğren |
-
-## 🔔 Otomatik Hatırlatmalar
-
-| Saat | İçerik |
-|------|--------|
-| 08:00 | ☀️ Sabah planı + motivasyon |
-| 10:00 | 📚 Ders çalışma hatırlatması |
-| 12:30 | 🍽️ Öğle yemeği + protein |
-| 14:00 | 📚 Ders çalışma hatırlatması |
-| 19:00 | 🍽️ Akşam yemeği + protein |
-| 22:00 | 🌙 Gün sonu özet |
-
-## 🛠️ Teknolojiler
-
-- **Python 3.10+**
-- **python-telegram-bot** — Telegram Bot API
-- **OpenAI SDK** → GitHub Models (GPT-4o-mini)
-- **APScheduler** — Zamanlı görevler
-- **SQLite** — Yerel veritabanı
-
-## 📁 Proje Yapısı
+## 📁 Yapı
 
 ```
 qiosk2/
-├── main.py                    # Ana giriş noktası
-├── config.py                  # Yapılandırma ve sabitler
-├── requirements.txt           # Python bağımlılıkları
-├── .env.example              # Örnek ortam değişkenleri
-├── .gitignore
-├── README.md
+├── main.py                     # Giriş noktası
+├── config.py                   # Ayarlar ve hedefler
+├── requirements.txt
+├── start_bot.bat               # Windows başlatıcı
 └── bot/
-    ├── __init__.py
-    ├── database.py            # SQLite veritabanı katmanı
+    ├── database.py             # SQLite veritabanı
     ├── handlers/
-    │   ├── __init__.py
-    │   ├── komutlar.py        # Slash komutları
-    │   └── butonlar.py        # Inline butonlar ve callback'ler
+    │   └── sohbet.py           # Ana mesaj işleyici + agent tool executor
     └── services/
-        ├── __init__.py
-        ├── ai_service.py      # GitHub Models AI entegrasyonu
-        └── hatirlatici.py     # APScheduler hatırlatmalar
+        ├── ai_service.py       # AI agent loop + function calling
+        ├── web_service.py      # Web arama + sayfa okuma
+        ├── system_service.py   # Dosya + sistem işlemleri
+        └── hatirlatici.py      # Zamanlı bildirimler
 ```
-
-## 📝 Lisans
-
-MIT

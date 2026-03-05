@@ -1,41 +1,22 @@
 """
-🤖 Kişisel Asistan Telegram Botu
-Haftalık planlama, hedef takibi, AI destekli kişisel asistan
-
-Çalıştırmak için:
-  1. .env dosyasını oluştur (.env.example'dan kopyala)
-  2. pip install -r requirements.txt
-  3. python main.py
+🤖 Kişisel Asistan Telegram Botu — Tam Yerel AI Ajan
+Komut yok, sadece doğal konuşma. Bot her şeyi anlar ve yapar.
 """
 
 import logging
 
-from telegram.ext import Application, CommandHandler, CallbackQueryHandler
+from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters
 
 from config import TELEGRAM_BOT_TOKEN
 from bot import database as db
-from bot.handlers.komutlar import (
-    basla,
-    calis,
-    hafta,
-    kilo,
-    kullanici_id,
-    ogun,
-    ozet,
-    plan,
-    sor,
-    tavsiye,
-)
-from bot.handlers.butonlar import (
-    buton_callback,
-    gorev_ekle_komut,
-    gorevleri_goster,
-    hizli_kilo,
-    pomodoro_baslat,
+from bot.handlers.sohbet import (
+    callback_handler,
+    id_handler,
+    mesaj_handler,
+    start_handler,
 )
 from bot.services.hatirlatici import hatirlatici_kur
 
-# Logging ayarı
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     level=logging.INFO,
@@ -44,69 +25,48 @@ logger = logging.getLogger(__name__)
 
 
 def main():
-    """Botu başlat."""
-    # Token kontrolü
     if not TELEGRAM_BOT_TOKEN or TELEGRAM_BOT_TOKEN == "buraya_telegram_token":
         print("❌ TELEGRAM_BOT_TOKEN ayarlanmamış!")
-        print("📋 .env.example dosyasını .env olarak kopyala ve token'ları gir.")
+        print("📋 .env.example → .env kopyala, token'ları gir.")
         return
 
-    # Veritabanı tablolarını oluştur
+    # Veritabanı
     db.tablolari_olustur()
     logger.info("✅ Veritabanı hazır")
 
-    # Bot uygulamasını oluştur
+    # Bot
     app = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
 
-    # ─── Komut Handler'ları ───────────────────────────
-    app.add_handler(CommandHandler("basla", basla))
-    app.add_handler(CommandHandler("start", basla))  # Telegram standart
-    app.add_handler(CommandHandler("id", kullanici_id))
-    app.add_handler(CommandHandler("plan", plan))
-    app.add_handler(CommandHandler("hafta", hafta))
-    app.add_handler(CommandHandler("kilo", kilo))
-    app.add_handler(CommandHandler("calis", calis))
-    app.add_handler(CommandHandler("ogun", ogun))
-    app.add_handler(CommandHandler("ozet", ozet))
-    app.add_handler(CommandHandler("sor", sor))
-    app.add_handler(CommandHandler("tavsiye", tavsiye))
+    # Sadece /start ve /id komutları — geri kalan her şey sohbetle
+    app.add_handler(CommandHandler("start", start_handler))
+    app.add_handler(CommandHandler("id", id_handler))
 
-    # ─── Buton Handler'ları ───────────────────────────
-    app.add_handler(CommandHandler("pomodoro", pomodoro_baslat))
-    app.add_handler(CommandHandler("gorevler", gorevleri_goster))
-    app.add_handler(CommandHandler("gorev_ekle", gorev_ekle_komut))
-    app.add_handler(CommandHandler("tartil", hizli_kilo))
+    # Inline buton callback'leri (pomodoro, görev)
+    app.add_handler(CallbackQueryHandler(callback_handler))
 
-    # ─── Callback Query (inline butonlar) ─────────────
-    app.add_handler(CallbackQueryHandler(buton_callback))
+    # 🧠 Ana handler — HER mesaj buraya gelir, AI karar verir
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, mesaj_handler))
 
-    # ─── Hatırlatıcıları kur ──────────────────────────
+    # Hatırlatıcılar
     scheduler = hatirlatici_kur(app)
     scheduler.start()
-    logger.info("✅ Zamanlı hatırlatıcılar aktif")
 
-    # ─── Botu başlat (polling modu - Windows uyumlu) ──
-    logger.info("🤖 Bot başlatılıyor...")
     print("""
-╔══════════════════════════════════════════════════╗
-║  🤖 Kişisel Asistan Bot Aktif!                  ║
-║                                                  ║
-║  Komutlar:                                       ║
-║  /basla    - Karşılama + hedef özeti             ║
-║  /plan     - Bugünün AI planı                    ║
-║  /hafta    - Haftalık özet                       ║
-║  /kilo     - Kilo kaydet                         ║
-║  /calis    - Çalışma kaydet                      ║
-║  /ogun     - Öğün önerisi                        ║
-║  /ozet     - Günlük ilerleme                     ║
-║  /sor      - AI'a soru sor                       ║
-║  /pomodoro - Zamanlayıcı başlat                  ║
-║  /gorevler - Görev listesi                       ║
-║  /tartil   - Hızlı kilo girişi                   ║
-║  /tavsiye  - Çalışma tavsiyesi                   ║
-║                                                  ║
-║  Durdurmak için: Ctrl+C                          ║
-╚══════════════════════════════════════════════════╝
+╔══════════════════════════════════════════════════════════╗
+║  🤖 Kişisel Asistan Bot — AI Ajan Modu                  ║
+║                                                          ║
+║  Komut yok, sadece doğal konuş:                          ║
+║                                                          ║
+║  "82 kiloyum"           → kaydeder                       ║
+║  "1 saat SAT çalıştım"  → kaydeder                      ║
+║  "bugün ne yapayım"     → AI plan yapar                  ║
+║  "ne yesem"             → diyet önerisi                  ║
+║  "nasıl gidiyorum"      → özet çıkarır                   ║
+║  "İstanbul otel bul"    → internette araştırır           ║
+║  "desktop'taki dosyalar" → bilgisayarı kontrol eder      ║
+║                                                          ║
+║  Ctrl+C ile durdur                                       ║
+╚══════════════════════════════════════════════════════════╝
     """)
 
     app.run_polling(drop_pending_updates=True)

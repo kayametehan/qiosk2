@@ -1,38 +1,259 @@
 """
-AI Servisi - GitHub Models (GPT-4o-mini) entegrasyonu
+AI Servis - Agent Loop ile Çok Adımlı Görev Çözücü
+Kullanıcı bir şey istediğinde AI kendi başına tool'ları zincirleyerek çözer.
 """
 
+import json
+import logging
 from datetime import date
+from typing import Callable, Optional
+
 from openai import OpenAI
 
-from config import AI_BASE_URL, AI_MODEL, GITHUB_TOKEN, HEDEFLER, SYSTEM_PROMPT
+from config import AI_BASE_URL, AI_MODEL, GITHUB_TOKEN, HEDEFLER, MAX_AGENT_STEPS, SYSTEM_PROMPT
+
+logger = logging.getLogger(__name__)
+
+
+# ─── Tool Tanımları (AI bunlardan seçer) ──────────────────
+
+TOOLS = [
+    # --- Web ---
+    {
+        "type": "function",
+        "function": {
+            "name": "web_ara",
+            "description": "İnternette arama yap. Otel, restoran, ürün, bilgi, haber — her şeyi arayabilir. Türkçe veya İngilizce arama yapabilir.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "sorgu": {"type": "string", "description": "Aranacak metin"},
+                    "max_sonuc": {"type": "integer", "description": "Kaç sonuç (varsayılan 8)"},
+                },
+                "required": ["sorgu"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "sayfa_oku",
+            "description": "Bir web sayfasının içeriğini oku. URL ver, sayfadaki metni, yorumları, fiyatları çeker. Arama sonuçlarındaki linkleri detaylı incelemek için kullan.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "url": {"type": "string", "description": "Okunacak sayfanın URL'si"},
+                },
+                "required": ["url"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "haber_ara",
+            "description": "Güncel haberlerde arama yap.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "sorgu": {"type": "string", "description": "Haber arama sorgusu"},
+                },
+                "required": ["sorgu"],
+            },
+        },
+    },
+    # --- Dosya Sistemi ---
+    {
+        "type": "function",
+        "function": {
+            "name": "dosya_oku",
+            "description": "Bilgisayardaki bir dosyanın içeriğini oku. Tam yol ver.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "yol": {"type": "string", "description": "Dosya yolu (ör: C:/Users/kullanici/belge.txt veya ~/Desktop/notlar.md)"},
+                },
+                "required": ["yol"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "dosya_yaz",
+            "description": "Bir dosyaya içerik yaz. Dosya yoksa oluşturur, varsa üzerine yazar.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "yol": {"type": "string", "description": "Dosya yolu"},
+                    "icerik": {"type": "string", "description": "Yazılacak içerik"},
+                },
+                "required": ["yol", "icerik"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "dosya_listele",
+            "description": "Bir klasörün içeriğini listele. Dosya ve alt klasörleri gösterir.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "yol": {"type": "string", "description": "Klasör yolu (varsayılan: mevcut dizin)"},
+                    "detayli": {"type": "boolean", "description": "Dosya boyutlarını da göster"},
+                },
+                "required": ["yol"],
+            },
+        },
+    },
+    # --- Sistem ---
+    {
+        "type": "function",
+        "function": {
+            "name": "komut_calistir",
+            "description": "Terminal/komut satırında bir komut çalıştır. Herhangi bir shell komutu çalıştırabilir.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "komut": {"type": "string", "description": "Çalıştırılacak komut"},
+                    "cwd": {"type": "string", "description": "Çalışma dizini (isteğe bağlı)"},
+                },
+                "required": ["komut"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "uygulama_ac",
+            "description": "Bir URL'yi tarayıcıda aç veya bir dosya/uygulamayı varsayılan programla aç.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "hedef": {"type": "string", "description": "Açılacak URL, dosya yolu veya uygulama"},
+                },
+                "required": ["hedef"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "sistem_bilgisi",
+            "description": "Bilgisayarın CPU, RAM, disk kullanımını göster.",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },
+    # --- Kişisel Takip ---
+    {
+        "type": "function",
+        "function": {
+            "name": "kilo_kaydet",
+            "description": "Kullanıcının kilo değerini veritabanına kaydet.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "kilo": {"type": "number", "description": "Kilo (kg)"},
+                },
+                "required": ["kilo"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "calisma_kaydet",
+            "description": "Ders çalışma süresini kaydet.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "ders": {"type": "string", "enum": ["sat", "cents"], "description": "Ders adı"},
+                    "dakika": {"type": "integer", "description": "Çalışma süresi (dakika)"},
+                },
+                "required": ["ders", "dakika"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "gorev_ekle",
+            "description": "Yapılacaklar listesine görev ekle.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "gorev": {"type": "string", "description": "Görev açıklaması"},
+                },
+                "required": ["gorev"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "gorevleri_listele",
+            "description": "Bugünkü görevleri göster.",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "kilo_gecmisi",
+            "description": "Kilo kayıt geçmişini ve trendini göster.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "gun": {"type": "integer", "description": "Kaç günlük (varsayılan 7)"},
+                },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "ozet_goster",
+            "description": "Günlük ilerleme özetini göster (kilo, çalışma, görevler, sınav geri sayımı).",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "haftalik_ozet",
+            "description": "Haftalık istatistikleri ve çalışma detaylarını göster.",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "pomodoro_baslat",
+            "description": "Pomodoro çalışma zamanlayıcısı başlat (25dk çalış / 5dk mola).",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "ders": {"type": "string", "enum": ["sat", "cents"], "description": "Hangi ders"},
+                },
+                "required": ["ders"],
+            },
+        },
+    },
+]
 
 
 def _client() -> OpenAI:
-    """OpenAI client oluştur (GitHub Models endpoint)."""
-    return OpenAI(
-        base_url=AI_BASE_URL,
-        api_key=GITHUB_TOKEN,
-    )
+    return OpenAI(base_url=AI_BASE_URL, api_key=GITHUB_TOKEN)
 
 
 def _sistem_promptu() -> str:
-    """Güncel bilgilerle system prompt oluştur."""
     bugun = date.today()
-
     cents_kalan = (HEDEFLER["cents"]["sinav_tarihi"] - bugun).days
     sat_kalan = (HEDEFLER["sat"]["sinav_tarihi"] - bugun).days
 
-    # Sınav geçtiyse bilgiyi güncelle
-    if cents_kalan < 0:
-        cents_str = "CENT-S sınavı tamamlandı ✅"
-    else:
-        cents_str = f"{cents_kalan} gün"
-
-    if sat_kalan < 0:
-        sat_str = "SAT sınavı tamamlandı ✅"
-    else:
-        sat_str = f"{sat_kalan} gün"
+    cents_str = "CENT-S tamamlandı ✅" if cents_kalan < 0 else f"{cents_kalan} gün kaldı"
+    sat_str = "SAT tamamlandı ✅" if sat_kalan < 0 else f"{sat_kalan} gün kaldı"
 
     return SYSTEM_PROMPT.format(
         tarih=bugun.strftime("%d %B %Y"),
@@ -41,110 +262,110 @@ def _sistem_promptu() -> str:
     )
 
 
-def ai_soru_sor(soru: str, ek_bilgi: str = "") -> str:
-    """AI'a genel soru sor."""
+def agent_loop(
+    mesaj: str,
+    ek_context: str,
+    tool_executor: Callable,
+    progress_callback: Optional[Callable] = None,
+) -> str:
+    """
+    Ana ajan döngüsü. AI tool çağırır → çalıştırılır → sonuç geri verilir → tekrar.
+    Görev bitene kadar devam eder (max MAX_AGENT_STEPS adım).
+
+    Args:
+        mesaj: Kullanıcının mesajı
+        ek_context: Mevcut durum bilgisi (kilo, çalışma vs.)
+        tool_executor: Tool'ları çalıştıran fonksiyon (name, args) -> result
+        progress_callback: Her adımda çağrılan bildirim fonksiyonu (opsiyonel)
+
+    Returns:
+        AI'ın son cevabı (kullanıcıya gösterilecek metin)
+    """
+    client = _client()
+
+    messages = [
+        {"role": "system", "content": _sistem_promptu()},
+    ]
+
+    if ek_context:
+        messages.append({
+            "role": "system",
+            "content": f"Kullanıcının mevcut durumu:\n{ek_context}",
+        })
+
+    messages.append({"role": "user", "content": mesaj})
+
+    for step in range(MAX_AGENT_STEPS):
+        try:
+            response = client.chat.completions.create(
+                model=AI_MODEL,
+                messages=messages,
+                tools=TOOLS,
+                tool_choice="auto",
+                max_tokens=2000,
+                temperature=0.7,
+            )
+        except Exception as e:
+            logger.error(f"AI çağrı hatası (adım {step}): {e}")
+            return f"⚠️ AI ile iletişimde sorun oluştu: {str(e)[:150]}"
+
+        choice = response.choices[0]
+
+        # Tool çağrısı yok → görev tamamlandı, cevabı döndür
+        if not choice.message.tool_calls:
+            return choice.message.content or "🤔 Cevap oluşturulamadı."
+
+        # Tool çağrıları var → hepsini çalıştır
+        messages.append(choice.message)  # assistant mesajını ekle
+
+        for tool_call in choice.message.tool_calls:
+            func_name = tool_call.function.name
+            try:
+                func_args = json.loads(tool_call.function.arguments)
+            except json.JSONDecodeError:
+                func_args = {}
+
+            logger.info(f"🔧 Adım {step + 1}: {func_name}({func_args})")
+
+            # İlerleme bildirimi
+            if progress_callback:
+                try:
+                    progress_callback(step + 1, func_name, func_args)
+                except Exception:
+                    pass
+
+            # Tool'u çalıştır
+            try:
+                result = tool_executor(func_name, func_args)
+            except Exception as e:
+                result = f"❌ Tool hatası ({func_name}): {str(e)}"
+                logger.error(result)
+
+            # Sonucu mesajlara ekle
+            messages.append({
+                "role": "tool",
+                "tool_call_id": tool_call.id,
+                "content": str(result)[:6000],  # Token limiti için kırp
+            })
+
+    # Max adıma ulaşıldı
+    return "⚠️ Görev çok karmaşık, tüm adımları tamamlayamadım. Daha spesifik sorabilir misin?"
+
+
+def basit_ai_cevap(prompt: str) -> str:
+    """Basit AI cevabı — tool çağrısı olmadan, hatırlatmalar için."""
     try:
         client = _client()
-        messages = [
-            {"role": "system", "content": _sistem_promptu()},
-        ]
-
-        if ek_bilgi:
-            messages.append({"role": "system", "content": f"Ek bilgi:\n{ek_bilgi}"})
-
-        messages.append({"role": "user", "content": soru})
-
         response = client.chat.completions.create(
             model=AI_MODEL,
-            messages=messages,
-            max_tokens=1000,
+            messages=[
+                {"role": "system", "content": _sistem_promptu()},
+                {"role": "user", "content": prompt},
+            ],
+            max_tokens=800,
             temperature=0.7,
         )
         return response.choices[0].message.content
-
     except Exception as e:
-        return f"⚠️ AI servisi şu an yanıt veremiyor: {str(e)}"
-
-
-def gunluk_plan_olustur(kilo_bilgi: str = "", calisma_bilgi: str = "") -> str:
-    """AI ile günlük plan oluştur."""
-    bugun = date.today()
-    gun_adi = ["Pazartesi", "Salı", "Çarşamba", "Perşembe", "Cuma", "Cumartesi", "Pazar"][bugun.weekday()]
-
-    prompt = f"""Bugün {gun_adi}, {bugun.strftime('%d %B %Y')}.
-
-{kilo_bilgi}
-{calisma_bilgi}
-
-Benim için bugünün detaylı planını oluştur. Şunları içersin:
-
-1. ⏰ Saatlik program (08:00-23:00 arası)
-2. 📚 Ders çalışma blokları (hangi ders, kaç dakika, hangi konular)
-3. 🍽️ Öğün planı (yumurtasız, protein tozlu tariflerle)
-4. 🏋️ Egzersiz önerisi
-5. 💪 Günün motivasyon sözü
-
-Sınav yakınlığına göre ders dağılımını ayarla."""
-
-    return ai_soru_sor(prompt)
-
-
-def ogun_onerisi() -> str:
-    """AI ile öğün önerisi al."""
-    prompt = """Bana bugün için 3 öğünlük (kahvaltı, öğle, akşam) bir diyet menüsü öner.
-
-Kurallar:
-- ❌ Yumurta YOK
-- ✅ Karamelli protein tozu kullanabilirsin
-- 🎯 Yüksek protein, düşük kalori
-- Her öğünün yaklaşık kalorisini belirt
-- Kolay hazırlanan tarifler olsun
-- Ara öğün olarak protein shake tarifi ver"""
-
-    return ai_soru_sor(prompt)
-
-
-def motivasyon_mesaji() -> str:
-    """AI ile motivasyon mesajı oluştur."""
-    bugun = date.today()
-    cents_kalan = (HEDEFLER["cents"]["sinav_tarihi"] - bugun).days
-    sat_kalan = (HEDEFLER["sat"]["sinav_tarihi"] - bugun).days
-
-    prompt = f"""Kısa ve etkili bir sabah motivasyon mesajı yaz.
-
-CENT-S sınavına {cents_kalan} gün, SAT sınavına {sat_kalan} gün kaldı.
-Kilo hedefim 75 kg.
-
-Mesaj enerjik, samimi ve Türkçe olsun. 3-4 cümleyi geçmesin. Emoji kullan."""
-
-    return ai_soru_sor(prompt)
-
-
-def calisma_tavsiyesi(ders: str, kalan_gun: int) -> str:
-    """Belirli bir ders için çalışma tavsiyesi al."""
-    prompt = f"""{ders.upper()} sınavına {kalan_gun} gün kaldı.
-
-Bu sürede en verimli nasıl çalışabilirim?
-- Hangi konulara öncelik vermeliyim?
-- Günde kaç saat çalışmalıyım?
-- Pratik mi yapmalıyım yoksa konu mu çalışmalıyım?
-
-Kısa ve net bir plan ver."""
-
-    return ai_soru_sor(prompt)
-
-
-def gun_sonu_degerlendirme(calisma_ozet: str, kilo_bilgi: str, gorev_bilgi: str) -> str:
-    """Gün sonu değerlendirmesi yap."""
-    prompt = f"""Bugün şunları yaptım:
-
-📚 Çalışma: {calisma_ozet}
-⚖️ Kilo: {kilo_bilgi}
-✅ Görevler: {gorev_bilgi}
-
-Kısa bir gün sonu değerlendirmesi yap:
-- Neleri iyi yaptım?
-- Yarın neye dikkat etmeliyim?
-- 1 motivasyon cümlesi ekle"""
-
-    return ai_soru_sor(prompt)
+        logger.error(f"Basit AI hatası: {e}")
+        return f"⚠️ AI yanıt veremedi: {str(e)[:100]}"
