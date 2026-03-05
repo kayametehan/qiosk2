@@ -39,6 +39,15 @@ from bot.services.system_service import (
     uygulama_ac,
 )
 from bot.services.web_service import dosya_indir, haber_ara, sayfa_oku, web_ara
+from bot.services.skill_manager import (
+    kendi_kodunu_duzenle,
+    kendi_kodunu_oku,
+    skill_calistir as _skill_calistir,
+    skill_listele as _skill_listele,
+    skill_olustur as _skill_olustur,
+    skill_sil as _skill_sil,
+    skill_var_mi,
+)
 from config import HEDEFLER, POMODORO_CALISMA_DK, POMODORO_MOLA_DK, TELEGRAM_USER_ID
 
 logger = logging.getLogger(__name__)
@@ -198,7 +207,35 @@ def tool_calistir(func_name: str, func_args: dict) -> str:
     elif func_name == "pomodoro_baslat":
         return f"⏱️ POMODORO:{func_args['ders']}"  # Sohbet handler'da yakalanacak
 
+    # === Skill Yönetimi & Kendini Geliştirme ===
+    elif func_name == "skill_olustur":
+        return _skill_olustur(
+            func_args["ad"],
+            func_args["aciklama"],
+            func_args["parametreler_json"],
+            func_args["fonksiyon_kodu"],
+        )
+
+    elif func_name == "skill_listele":
+        return _skill_listele()
+
+    elif func_name == "skill_sil":
+        return _skill_sil(func_args["ad"])
+
+    elif func_name == "kendi_kodunu_oku":
+        return kendi_kodunu_oku(func_args["dosya_yolu"])
+
+    elif func_name == "kendi_kodunu_duzenle":
+        return kendi_kodunu_duzenle(
+            func_args["dosya_yolu"],
+            func_args["eski_metin"],
+            func_args["yeni_metin"],
+        )
+
     else:
+        # Dinamik skill kontrolü
+        if skill_var_mi(func_name):
+            return _skill_calistir(func_name, func_args)
         return f"❌ Bilinmeyen araç: {func_name}"
 
 

@@ -332,6 +332,76 @@ TOOLS = [
             },
         },
     },
+    # --- Skill Yönetimi & Kendini Geliştirme ---
+    {
+        "type": "function",
+        "function": {
+            "name": "skill_olustur",
+            "description": "Kendine yeni bir yetenek/skill oluştur. Python fonksiyonu olarak kaydedilir ve hemen kullanılabilir hale gelir. Eksik bir yeteneğin olduğunu fark edersen kendi kendine yeni skill oluşturabilirsin.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "ad": {"type": "string", "description": "Skill adı (snake_case, ASCII, Türkçe karakter yok)"},
+                    "aciklama": {"type": "string", "description": "Skill'in ne yaptığının açıklaması"},
+                    "parametreler_json": {"type": "string", "description": "OpenAI function parameters JSON schema string. Örnek: {\"type\":\"object\",\"properties\":{\"x\":{\"type\":\"string\"}},\"required\":[\"x\"]}"},
+                    "fonksiyon_kodu": {"type": "string", "description": "calistir(**kwargs) fonksiyonunun gövdesi (def satırı OLMADAN). kwargs.get() ile parametrelere eriş. String döndürmeli."},
+                },
+                "required": ["ad", "aciklama", "parametreler_json", "fonksiyon_kodu"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "skill_listele",
+            "description": "Oluşturulmuş tüm özel skill'leri listele.",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "skill_sil",
+            "description": "Bir özel skill'i sil.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "ad": {"type": "string", "description": "Silinecek skill adı"},
+                },
+                "required": ["ad"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "kendi_kodunu_oku",
+            "description": "Kendi kaynak kodunu oku. Bot'un kendi dosyalarını incelemek, anlamak ve geliştirmek için kullan. Proje köküne göre relative yol ver.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "dosya_yolu": {"type": "string", "description": "Proje köküne göre dosya yolu (ör: bot/services/ai_service.py, config.py, main.py)"},
+                },
+                "required": ["dosya_yolu"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "kendi_kodunu_duzenle",
+            "description": "Kendi kaynak kodunu düzenle. Metin bul-değiştir yöntemi ile çalışır. Otomatik yedek alınır ve syntax kontrolü yapılır. Önce kendi_kodunu_oku ile dosyayı oku, sonra düzenle.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "dosya_yolu": {"type": "string", "description": "Proje köküne göre dosya yolu"},
+                    "eski_metin": {"type": "string", "description": "Değiştirilecek mevcut metin (dosyadaki ile BİREBİR aynı olmalı)"},
+                    "yeni_metin": {"type": "string", "description": "Yerine konacak yeni metin"},
+                },
+                "required": ["dosya_yolu", "eski_metin", "yeni_metin"],
+            },
+        },
+    },
 ]
 
 
@@ -396,9 +466,13 @@ def agent_loop(
 
     messages.append({"role": "user", "content": mesaj})
 
+    # Dinamik skill tool'larını statik TOOLS ile birleştir
+    from bot.services.skill_manager import skill_toollarini_getir
+    tum_toollar = TOOLS + skill_toollarini_getir()
+
     for step in range(MAX_AGENT_STEPS):
         try:
-            data = _api_cagri(messages, TOOLS)
+            data = _api_cagri(messages, tum_toollar)
         except httpx.HTTPStatusError as e:
             logger.error(f"API HTTP hatası (adım {step}): {e.response.status_code} {e.response.text[:300]}")
             return f"⚠️ AI servisi hata verdi (HTTP {e.response.status_code}). Biraz sonra tekrar dene."
