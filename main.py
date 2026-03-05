@@ -1,74 +1,78 @@
 """
-🤖 Kişisel Asistan Telegram Botu — Tam Yerel AI Ajan
-Komut yok, sadece doğal konuşma. Bot her şeyi anlar ve yapar.
+Qiosk2 — Kişisel AI Asistan Telegram Botu
+Ana giriş noktası. Sadece /start ve /id komutu var, geri kalan her şey doğal sohbet.
 """
 
 import logging
 
-from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from telegram.ext import Application, CommandHandler, MessageHandler, filters
 
-from config import TELEGRAM_BOT_TOKEN
-from bot import database as db
-from bot.handlers.sohbet import (
-    callback_handler,
-    id_handler,
-    mesaj_handler,
-    start_handler,
-)
-from bot.services.hatirlatici import hatirlatici_kur
+from bot.database import tablolari_olustur
+from bot.handlers.sohbet import mesaj_handler
+from bot.services.hatirlatici import hatirlaticilari_kur
+from config import TELEGRAM_BOT_TOKEN, TELEGRAM_USER_ID
 
+# ─── Logging ───────────────────────────────────────────────
 logging.basicConfig(
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
     level=logging.INFO,
 )
 logger = logging.getLogger(__name__)
 
 
+# ─── Komutlar ──────────────────────────────────────────────
+
+async def start(update, context):
+    """Bot başlangıç mesajı."""
+    await update.message.reply_text(
+        "👋 Merhaba! Ben senin kişisel AI asistanınım.\n\n"
+        "Bana her şeyi sorabilirsin:\n"
+        "• İnternette araştırma\n"
+        "• Dosya işlemleri\n"
+        "• Kilo / çalışma takibi\n"
+        "• Pomodoro zamanlayıcı\n"
+        "• Sistem bilgisi\n"
+        "• Ve daha fazlası...\n\n"
+        "Sadece yaz, ben hallederim! 🚀"
+    )
+
+
+async def id_goster(update, context):
+    """Kullanıcı ID'sini göster."""
+    await update.message.reply_text(f"🆔 Senin Telegram ID'n: {update.effective_user.id}")
+
+
+# ─── Uygulama ─────────────────────────────────────────────
+
 def main():
-    if not TELEGRAM_BOT_TOKEN or TELEGRAM_BOT_TOKEN == "buraya_telegram_token":
-        print("❌ TELEGRAM_BOT_TOKEN ayarlanmamış!")
-        print("📋 .env.example → .env kopyala, token'ları gir.")
+    """Bot'u başlat."""
+    if not TELEGRAM_BOT_TOKEN:
+        logger.error("❌ TELEGRAM_BOT_TOKEN ayarlanmamış! .env dosyasını kontrol et.")
         return
 
-    # Veritabanı
-    db.tablolari_olustur()
-    logger.info("✅ Veritabanı hazır")
+    # Veritabanı tablolarını oluştur
+    tablolari_olustur()
+    logger.info("✅ Veritabanı hazır.")
 
-    # Bot
+    # Bot uygulamasını oluştur
     app = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
 
-    # Sadece /start ve /id komutları — geri kalan her şey sohbetle
-    app.add_handler(CommandHandler("start", start_handler))
-    app.add_handler(CommandHandler("id", id_handler))
+    # Komutlar (sadece 2 tane)
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("id", id_goster))
 
-    # Inline buton callback'leri (pomodoro, görev)
-    app.add_handler(CallbackQueryHandler(callback_handler))
-
-    # 🧠 Ana handler — HER mesaj buraya gelir, AI karar verir
+    # Diğer tüm mesajlar → AI ajan
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, mesaj_handler))
 
     # Hatırlatıcılar
-    scheduler = hatirlatici_kur(app)
+    scheduler = AsyncIOScheduler(timezone="Europe/Istanbul")
+    hatirlaticilari_kur(scheduler, app.bot)
     scheduler.start()
+    logger.info("⏰ Zamanlayıcı başlatıldı.")
 
-    print("""
-╔══════════════════════════════════════════════════════════╗
-║  🤖 Kişisel Asistan Bot — AI Ajan Modu                  ║
-║                                                          ║
-║  Komut yok, sadece doğal konuş:                          ║
-║                                                          ║
-║  "82 kiloyum"           → kaydeder                       ║
-║  "1 saat SAT çalıştım"  → kaydeder                      ║
-║  "bugün ne yapayım"     → AI plan yapar                  ║
-║  "ne yesem"             → diyet önerisi                  ║
-║  "nasıl gidiyorum"      → özet çıkarır                   ║
-║  "İstanbul otel bul"    → internette araştırır           ║
-║  "desktop'taki dosyalar" → bilgisayarı kontrol eder      ║
-║                                                          ║
-║  Ctrl+C ile durdur                                       ║
-╚══════════════════════════════════════════════════════════╝
-    """)
-
+    # Bot çalıştır
+    logger.info("🤖 Bot başlatılıyor...")
     app.run_polling(drop_pending_updates=True)
 
 

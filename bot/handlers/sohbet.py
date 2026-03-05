@@ -1,494 +1,374 @@
 """
-Sohbet Handler - Ana mesaj işleyici
-Her mesaj buraya gelir, AI agent loop ile çözülür.
+Sohbet Handler — Ana mesaj işleyici.
+Doğal dildeki mesajları AI ajana yönlendirir, tool çağrılarını yürütür.
 """
 
 import asyncio
 import logging
 from datetime import date
-from functools import partial
 
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update
 from telegram.ext import ContextTypes
 
-from config import HEDEFLER, POMODORO_CALISMA_DK, POMODORO_MOLA_DK
-from bot import database as db
-from bot.services import ai_service, web_service, system_service
+from bot.database import (
+    calisma_kaydet,
+    genel_istatistik,
+    gorev_ekle,
+    gunluk_calisma,
+    gunluk_ogunler,
+    gunun_gorevleri,
+    haftalik_calisma,
+    haftalik_gunluk_detay,
+    kilo_gecmisi,
+    kilo_kaydet,
+    son_kilo,
+)
+from bot.services.ai_service import agent_loop
+from bot.services.system_service import (
+    dosya_ara,
+    dosya_listele,
+    dosya_oku,
+    dosya_yaz,
+    ekran_goruntusu,
+    islem_kapat,
+    islem_listele,
+    komut_calistir,
+    panoya_kopyala,
+    panodan_oku,
+    sistem_bilgisi,
+    uygulama_ac,
+)
+from bot.services.web_service import dosya_indir, haber_ara, sayfa_oku, web_ara
+from config import HEDEFLER, POMODORO_CALISMA_DK, POMODORO_MOLA_DK, TELEGRAM_USER_ID
 
 logger = logging.getLogger(__name__)
 
-# Aktif pomodoro oturumları {user_id: asyncio.Task}
-aktif_pomodorolar: dict = {}
+# Aktif pomodoro'lar
+aktif_pomodorolar = {}
 
 
-# ─── Tool Executor — AI'ın çağırdığı tool'ları çalıştırır ─
+# ─── Context oluştur (özet bilgi) ─────────────────────────
 
-def tool_calistir(tool_adi: str, tool_args: dict) -> str:
-    """AI'ın istediği tool'u çalıştır ve sonucu döndür."""
-
-    # --- Web Tools ---
-    if tool_adi == "web_ara":
-        return web_service.web_ara(
-            tool_args["sorgu"],
-            tool_args.get("max_sonuc", 8),
-        )
-
-    elif tool_adi == "sayfa_oku":
-        return web_service.sayfa_oku(tool_args["url"])
-
-    elif tool_adi == "haber_ara":
-        return web_service.haber_ara(tool_args["sorgu"])
-
-    # --- Dosya/Sistem Tools ---
-    elif tool_adi == "dosya_oku":
-        return system_service.dosya_oku(tool_args["yol"])
-
-    elif tool_adi == "dosya_yaz":
-        return system_service.dosya_yaz(tool_args["yol"], tool_args["icerik"])
-
-    elif tool_adi == "dosya_listele":
-        return system_service.dosya_listele(
-            tool_args.get("yol", "."),
-            tool_args.get("detayli", False),
-        )
-
-    elif tool_adi == "komut_calistir":
-        return system_service.komut_calistir(
-            tool_args["komut"],
-            tool_args.get("cwd"),
-        )
-
-    elif tool_adi == "uygulama_ac":
-        return system_service.uygulama_ac(tool_args["hedef"])
-
-    elif tool_adi == "sistem_bilgisi":
-        return system_service.sistem_bilgisi()
-
-    # --- Kişisel Takip Tools ---
-    elif tool_adi == "kilo_kaydet":
-        kilo = tool_args["kilo"]
-        sonuc = db.kilo_kaydet(kilo)
-        hedef = HEDEFLER["kilo"]["hedef_kg"]
-        fark = kilo - hedef
-        return (
-            f"Kilo kaydedildi: {kilo} kg (Tarih: {sonuc['tarih']})\n"
-            f"Hedef: {hedef} kg | Fark: {fark:+.1f} kg\n"
-            f"{'Güncelleme' if sonuc['guncellendi'] else 'Yeni kayıt'}"
-        )
-
-    elif tool_adi == "calisma_kaydet":
-        ders = tool_args["ders"]
-        dakika = tool_args["dakika"]
-        sonuc = db.calisma_kaydet(ders, dakika)
-        gunluk = db.gunluk_calisma()
-        toplam = sum(gunluk.values())
-        return (
-            f"Çalışma kaydedildi: {ders.upper()} — {dakika} dakika\n"
-            f"Bugünkü toplam: {toplam} dakika\n"
-            f"Detay: {', '.join(f'{d.upper()}: {dk}dk' for d, dk in gunluk.items())}"
-        )
-
-    elif tool_adi == "gorev_ekle":
-        gorev_metni = tool_args["gorev"]
-        gorev_id = db.gorev_ekle(gorev_metni)
-        return f"Görev eklendi (ID: {gorev_id}): {gorev_metni}"
-
-    elif tool_adi == "gorevleri_listele":
-        gorevler = db.gunun_gorevleri()
-        if not gorevler:
-            return "Bugün görev yok."
-        satirlar = []
-        for g in gorevler:
-            durum = {"tamamlandi": "✅", "ertelendi": "⏭️", "bekliyor": "⏳"}.get(g["durum"], "⏳")
-            satirlar.append(f"{durum} [{g['id']}] {g['gorev']}")
-        return "Bugünkü görevler:\n" + "\n".join(satirlar)
-
-    elif tool_adi == "kilo_gecmisi":
-        gun = tool_args.get("gun", 7)
-        gecmis = db.kilo_gecmisi(gun)
-        if not gecmis:
-            return "Kilo kaydı yok."
-        satirlar = [f"{k['tarih']}: {k['kilo']} kg" for k in reversed(gecmis)]
-        if len(gecmis) >= 2:
-            degisim = gecmis[0]["kilo"] - gecmis[-1]["kilo"]
-            satirlar.append(f"Değişim: {degisim:+.1f} kg")
-        return "Kilo geçmişi:\n" + "\n".join(satirlar)
-
-    elif tool_adi == "ozet_goster":
-        return _ozet_olustur()
-
-    elif tool_adi == "haftalik_ozet":
-        return _haftalik_ozet_olustur()
-
-    elif tool_adi == "pomodoro_baslat":
-        # Pomodoro özel — sadece bilgi döndür, asıl başlatma sohbet handler'da
-        return f"POMODORO_TRIGGER:{tool_args['ders']}"
-
-    else:
-        return f"Bilinmeyen tool: {tool_adi}"
-
-
-def _ozet_olustur() -> str:
-    """Günlük özet verisi oluştur."""
+def _kullanici_contexti() -> str:
+    """Mevcut istatistikleri AI'ya context olarak ver."""
     bugun = date.today()
-    gunluk = db.gunluk_calisma()
-    son_kilo = db.son_kilo()
-    gorevler = db.gunun_gorevleri()
-    istatistik = db.genel_istatistik()
-
-    satirlar = [f"Tarih: {bugun.isoformat()}"]
-
-    # Çalışma
-    if gunluk:
-        satirlar.append("Bugünkü çalışma: " + ", ".join(f"{d.upper()}: {dk}dk" for d, dk in gunluk.items()))
-        satirlar.append(f"Toplam: {sum(gunluk.values())} dakika")
-    else:
-        satirlar.append("Bugün çalışma yok")
+    parcalar = []
 
     # Kilo
-    if son_kilo:
-        fark = son_kilo["kilo"] - HEDEFLER["kilo"]["hedef_kg"]
-        satirlar.append(f"Son kilo: {son_kilo['kilo']} kg (Hedef: 75 kg, Fark: {fark:+.1f} kg)")
-    else:
-        satirlar.append("Kilo kaydı yok")
+    sk = son_kilo()
+    if sk:
+        hedef = HEDEFLER["kilo"]["hedef_kg"]
+        fark = sk["kilo"] - hedef
+        parcalar.append(f"Son kilo: {sk['kilo']} kg (hedef {hedef}, {'+' if fark > 0 else ''}{fark:.1f} kg)")
 
-    # Sınavlar
-    for sinav in ["cents", "sat"]:
-        kalan = (HEDEFLER[sinav]["sinav_tarihi"] - bugun).days
-        if kalan >= 0:
-            satirlar.append(f"{HEDEFLER[sinav]['aciklama']}: {kalan} gün kaldı")
-        else:
-            satirlar.append(f"{HEDEFLER[sinav]['aciklama']}: Tamamlandı")
+    # Bugünkü çalışma
+    gc = gunluk_calisma()
+    if gc:
+        satir = ", ".join(f"{k}: {v} dk" for k, v in gc.items())
+        parcalar.append(f"Bugünkü çalışma: {satir}")
 
     # Görevler
+    gorevler = gunun_gorevleri()
     if gorevler:
-        tamamlanan = sum(1 for g in gorevler if g["durum"] == "tamamlandi")
-        satirlar.append(f"Görevler: {tamamlanan}/{len(gorevler)} tamamlandı")
+        bekleyen = [g for g in gorevler if g["durum"] == "bekliyor"]
+        tamamlanan = [g for g in gorevler if g["durum"] == "tamamlandi"]
+        parcalar.append(f"Görevler: {len(tamamlanan)} tamamlandı, {len(bekleyen)} bekliyor")
 
-    satirlar.append(f"Bu hafta toplam çalışma: {istatistik['hafta_calisma_dk']} dakika")
+    # Öğünler
+    ogunler = gunluk_ogunler()
+    if ogunler:
+        parcalar.append(f"Bugün {len(ogunler)} öğün kaydı var")
 
-    return "\n".join(satirlar)
+    # Geri sayım
+    cents_kalan = (HEDEFLER["cents"]["sinav_tarihi"] - bugun).days
+    sat_kalan = (HEDEFLER["sat"]["sinav_tarihi"] - bugun).days
+    if cents_kalan > 0:
+        parcalar.append(f"CENT-S sınavına {cents_kalan} gün")
+    if sat_kalan > 0:
+        parcalar.append(f"SAT sınavına {sat_kalan} gün")
+
+    return "\n".join(parcalar) if parcalar else ""
+
+
+# ─── Tool Executor ─────────────────────────────────────────
+
+def tool_calistir(func_name: str, func_args: dict) -> str:
+    """Tool adını ve argümanlarını alıp ilgili fonksiyonu çağırır."""
+
+    # === Web ===
+    if func_name == "web_ara":
+        return web_ara(func_args["sorgu"], func_args.get("max_sonuc", 8))
+
+    elif func_name == "sayfa_oku":
+        return sayfa_oku(func_args["url"])
+
+    elif func_name == "haber_ara":
+        return haber_ara(func_args["sorgu"])
+
+    elif func_name == "dosya_indir":
+        return dosya_indir(func_args["url"], func_args.get("kayit_yolu"))
+
+    # === Dosya Sistemi ===
+    elif func_name == "dosya_oku":
+        return dosya_oku(func_args["yol"])
+
+    elif func_name == "dosya_yaz":
+        return dosya_yaz(func_args["yol"], func_args["icerik"])
+
+    elif func_name == "dosya_listele":
+        return dosya_listele(func_args.get("yol", "."), func_args.get("detayli", False))
+
+    elif func_name == "dosya_ara":
+        return dosya_ara(
+            func_args["baslangic_yolu"],
+            func_args["desen"],
+            func_args.get("icerik_ara"),
+        )
+
+    # === Sistem ===
+    elif func_name == "komut_calistir":
+        return komut_calistir(func_args["komut"], func_args.get("cwd"))
+
+    elif func_name == "uygulama_ac":
+        return uygulama_ac(func_args["hedef"])
+
+    elif func_name == "sistem_bilgisi":
+        return sistem_bilgisi()
+
+    elif func_name == "islem_listele":
+        return islem_listele(func_args.get("filtre"))
+
+    elif func_name == "islem_kapat":
+        return islem_kapat(func_args["islem_adi"])
+
+    elif func_name == "ekran_goruntusu":
+        return ekran_goruntusu(func_args.get("kayit_yolu"))
+
+    elif func_name == "panoya_kopyala":
+        return panoya_kopyala(func_args["metin"])
+
+    elif func_name == "panodan_oku":
+        return panodan_oku()
+
+    # === Kişisel Takip ===
+    elif func_name == "kilo_kaydet":
+        result = kilo_kaydet(func_args["kilo"])
+        return (
+            f"✅ {result['tarih']}: {result['kilo']} kg kaydedildi"
+            + (" (güncellendi)" if result.get("guncellendi") else "")
+        )
+
+    elif func_name == "calisma_kaydet":
+        result = calisma_kaydet(func_args["ders"], func_args["dakika"])
+        return f"✅ {result['ders']} çalışması kaydedildi: {result['dakika']} dakika"
+
+    elif func_name == "gorev_ekle":
+        gorev_id = gorev_ekle(func_args["gorev"])
+        return f"✅ Görev eklendi (ID: {gorev_id}): {func_args['gorev']}"
+
+    elif func_name == "gorevleri_listele":
+        gorevler = gunun_gorevleri()
+        if not gorevler:
+            return "📋 Bugün için görev yok."
+        cikti = "📋 Bugünkü görevler:\n\n"
+        for g in gorevler:
+            durum = "✅" if g["durum"] == "tamamlandi" else "⏳" if g["durum"] == "bekliyor" else "↩️"
+            cikti += f"  {durum} [{g['id']}] {g['gorev']}\n"
+        return cikti
+
+    elif func_name == "kilo_gecmisi":
+        gecmis = kilo_gecmisi(func_args.get("gun", 7))
+        if not gecmis:
+            return "📊 Henüz kilo kaydı yok."
+        cikti = "📊 Kilo geçmişi:\n\n"
+        for k in gecmis:
+            cikti += f"  {k['tarih']}: {k['kilo']} kg\n"
+        hedef = HEDEFLER["kilo"]["hedef_kg"]
+        son = gecmis[0]["kilo"]
+        fark = son - hedef
+        cikti += f"\n🎯 Hedef: {hedef} kg | Fark: {'+' if fark > 0 else ''}{fark:.1f} kg"
+        return cikti
+
+    elif func_name == "ozet_goster":
+        return _gunluk_ozet_olustur()
+
+    elif func_name == "haftalik_ozet":
+        return _haftalik_ozet_olustur()
+
+    elif func_name == "pomodoro_baslat":
+        return f"⏱️ POMODORO:{func_args['ders']}"  # Sohbet handler'da yakalanacak
+
+    else:
+        return f"❌ Bilinmeyen araç: {func_name}"
+
+
+# ─── Özet Oluşturucular ────────────────────────────────────
+
+def _gunluk_ozet_olustur() -> str:
+    bugun = date.today()
+    cikti = f"📊 Günlük Özet — {bugun.strftime('%d.%m.%Y')}\n\n"
+
+    # Kilo
+    sk = son_kilo()
+    if sk:
+        hedef = HEDEFLER["kilo"]["hedef_kg"]
+        cikti += f"⚖️ Kilo: {sk['kilo']} kg (hedef {hedef})\n"
+
+    # Çalışma
+    gc = gunluk_calisma()
+    if gc:
+        cikti += "\n📚 Bugünkü çalışma:\n"
+        for ders, dk in gc.items():
+            saat = dk // 60
+            kalan = dk % 60
+            cikti += f"  • {ders.upper()}: {saat}s {kalan}dk\n" if saat else f"  • {ders.upper()}: {kalan}dk\n"
+        toplam = sum(gc.values())
+        cikti += f"  Toplam: {toplam} dakika\n"
+    else:
+        cikti += "\n📚 Bugün henüz çalışma yok\n"
+
+    # Görevler
+    gorevler = gunun_gorevleri()
+    if gorevler:
+        tamam = sum(1 for g in gorevler if g["durum"] == "tamamlandi")
+        cikti += f"\n✅ Görevler: {tamam}/{len(gorevler)} tamamlandı\n"
+
+    # Geri sayım
+    cents_kalan = (HEDEFLER["cents"]["sinav_tarihi"] - bugun).days
+    sat_kalan = (HEDEFLER["sat"]["sinav_tarihi"] - bugun).days
+    cikti += f"\n⏳ CENT-S: {cents_kalan} gün | SAT: {sat_kalan} gün\n"
+
+    return cikti
 
 
 def _haftalik_ozet_olustur() -> str:
-    """Haftalık özet verisi oluştur."""
-    haftalik = db.haftalik_calisma()
-    detay = db.haftalik_gunluk_detay()
-    kilo_gecmisi = db.kilo_gecmisi(7)
-    istatistik = db.genel_istatistik()
+    cikti = "📊 Haftalık Özet\n\n"
 
-    satirlar = ["Haftalık Özet:"]
+    hc = haftalik_calisma()
+    if hc:
+        cikti += "📚 Son 7 gün çalışma:\n"
+        for ders, dk in hc.items():
+            saat = dk // 60
+            kalan = dk % 60
+            cikti += f"  • {ders.upper()}: {saat}s {kalan}dk\n"
+        toplam = sum(hc.values())
+        cikti += f"  Toplam: {toplam // 60}s {toplam % 60}dk\n"
 
-    if haftalik:
-        for ders, dk in haftalik.items():
-            satirlar.append(f"  {ders.upper()}: {dk // 60}s {dk % 60}dk")
-        toplam = sum(haftalik.values())
-        satirlar.append(f"  Toplam: {toplam // 60} saat {toplam % 60} dakika")
-
+    detay = haftalik_gunluk_detay()
     if detay:
-        satirlar.append("\nGün gün:")
-        gunler = {}
+        cikti += "\n📅 Gün gün:\n"
+        gun_gruplari = {}
         for d in detay:
-            gunler.setdefault(d["tarih"], []).append(f"{d['ders'].upper()}: {d['toplam']}dk")
-        for tarih, dersler in gunler.items():
-            satirlar.append(f"  {tarih}: {', '.join(dersler)}")
+            gun_gruplari.setdefault(d["tarih"], []).append(d)
+        for tarih, dersler in gun_gruplari.items():
+            toplam = sum(d["toplam"] for d in dersler)
+            cikti += f"  {tarih}: {toplam} dk\n"
 
-    if kilo_gecmisi:
-        satirlar.append("\nKilo trendi:")
-        for k in reversed(kilo_gecmisi):
-            satirlar.append(f"  {k['tarih']}: {k['kilo']} kg")
+    kg = kilo_gecmisi(7)
+    if kg:
+        cikti += "\n⚖️ Kilo trendi:\n"
+        for k in reversed(kg):
+            cikti += f"  {k['tarih']}: {k['kilo']} kg\n"
 
-    satirlar.append(f"\nToplam görev: {istatistik['tamamlanan_gorev']}/{istatistik['toplam_gorev']}")
+    stats = genel_istatistik()
+    cikti += f"\n📈 Genel: {stats['tamamlanan_gorev']}/{stats['toplam_gorev']} görev tamamlandı\n"
 
-    return "\n".join(satirlar)
+    return cikti
 
 
-# ─── Ana Mesaj Handler ────────────────────────────────────
+# ─── Pomodoro ──────────────────────────────────────────────
 
-async def mesaj_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Her gelen mesajı işle — AI agent loop ile."""
-    mesaj = update.message.text
+async def _pomodoro_dongusu(update: Update, context: ContextTypes.DEFAULT_TYPE, ders: str):
+    """Pomodoro zamanlayıcısı — 25dk çalışma + 5dk mola."""
     user_id = update.effective_user.id
 
+    if user_id in aktif_pomodorolar:
+        await update.message.reply_text("⏱️ Zaten aktif bir pomodoro var!")
+        return
+
+    aktif_pomodorolar[user_id] = True
+
+    await update.message.reply_text(
+        f"🍅 Pomodoro başladı!\n"
+        f"📚 Ders: {ders.upper()}\n"
+        f"⏱️ {POMODORO_CALISMA_DK} dakika çalışma..."
+    )
+
+    await asyncio.sleep(POMODORO_CALISMA_DK * 60)
+
+    if user_id not in aktif_pomodorolar:
+        return
+
+    # Çalışmayı kaydet
+    calisma_kaydet(ders, POMODORO_CALISMA_DK)
+
+    await update.message.reply_text(
+        f"✅ {POMODORO_CALISMA_DK} dakika tamamlandı!\n"
+        f"📚 {ders.upper()} çalışması kaydedildi.\n"
+        f"☕ {POMODORO_MOLA_DK} dakika mola!"
+    )
+
+    await asyncio.sleep(POMODORO_MOLA_DK * 60)
+
+    if user_id in aktif_pomodorolar:
+        del aktif_pomodorolar[user_id]
+        await update.message.reply_text("🍅 Mola bitti! Hazırsan yeni pomodoro başlat.")
+
+
+# ─── Ana Mesaj Handler ─────────────────────────────────────
+
+async def mesaj_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Her mesajı AI ajana ilet. Bot zeka ile ne yapacağına karar verir."""
+
+    if not update.message or not update.message.text:
+        return
+
+    # Sadece yetkili kullanıcı
+    if TELEGRAM_USER_ID and update.effective_user.id != TELEGRAM_USER_ID:
+        await update.message.reply_text("⛔ Yetkin yok.")
+        return
+
+    mesaj = update.message.text.strip()
     if not mesaj:
         return
 
-    # "Düşünüyor" göstergesi
-    await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
+    # Bekleniyor…
+    bekle = await update.message.reply_text("🤔 Düşünüyorum...")
 
-    # Mevcut durum bilgisini topla (AI'a context olarak verilecek)
-    ek_context = _kullanici_context_olustur()
+    # Durum güncelleyici
+    adim_sayaci = [0]
 
-    # İlerleme mesajları göndermek için callback
-    progress_messages = []
+    def ilerleme_goster(adim: int, tool_adi: str, args: dict):
+        adim_sayaci[0] = adim
+        try:
+            asyncio.get_event_loop().create_task(
+                bekle.edit_text(f"🔧 Adım {adim}: {tool_adi}...")
+            )
+        except Exception:
+            pass
 
-    def progress_fn(step, tool_name, tool_args):
-        tool_aciklama = {
-            "web_ara": "🔍 İnternette arıyorum...",
-            "sayfa_oku": "📄 Sayfayı okuyorum...",
-            "haber_ara": "📰 Haberlere bakıyorum...",
-            "dosya_oku": "📂 Dosyayı okuyorum...",
-            "dosya_yaz": "📝 Dosyaya yazıyorum...",
-            "dosya_listele": "📁 Klasörü listeliyorum...",
-            "komut_calistir": "💻 Komut çalıştırıyorum...",
-            "uygulama_ac": "🚀 Açıyorum...",
-            "sistem_bilgisi": "💻 Sistem bilgisi alıyorum...",
-            "kilo_kaydet": "⚖️ Kilo kaydediyorum...",
-            "calisma_kaydet": "📚 Çalışma kaydediyorum...",
-            "gorev_ekle": "📋 Görev ekliyorum...",
-            "gorevleri_listele": "📋 Görevlere bakıyorum...",
-            "kilo_gecmisi": "📊 Kilo geçmişine bakıyorum...",
-            "ozet_goster": "📈 Özet hazırlıyorum...",
-            "haftalik_ozet": "📊 Haftalık özet hazırlıyorum...",
-            "pomodoro_baslat": "⏱️ Pomodoro hazırlıyorum...",
-        }
-        progress_messages.append(tool_aciklama.get(tool_name, f"🔧 {tool_name}..."))
+    # Agent loop'u çalıştır (blocking → thread'de)
+    ctx = _kullanici_contexti()
 
-    # Agent loop'u ayrı thread'de çalıştır (blocking olduğu için)
     loop = asyncio.get_event_loop()
+    cevap = await loop.run_in_executor(
+        None,
+        lambda: agent_loop(mesaj, ctx, tool_calistir, ilerleme_goster),
+    )
 
-    # İlerleme mesajı gönderme task'ı
-    async def send_progress():
-        """Her 3 saniyede bir ilerleme mesajı gönder."""
-        sent = set()
-        while True:
-            await asyncio.sleep(2)
-            for msg in progress_messages:
-                if msg not in sent:
-                    sent.add(msg)
-                    try:
-                        await context.bot.send_chat_action(
-                            chat_id=update.effective_chat.id, action="typing"
-                        )
-                    except Exception:
-                        pass
-
-    progress_task = asyncio.create_task(send_progress())
-
-    try:
-        cevap = await loop.run_in_executor(
-            None,
-            lambda: ai_service.agent_loop(mesaj, ek_context, tool_calistir, progress_fn),
-        )
-    except Exception as e:
-        logger.error(f"Agent loop hatası: {e}")
-        cevap = f"😅 Bir sorun oluştu, tekrar dener misin?\n({str(e)[:100]})"
-    finally:
-        progress_task.cancel()
-
-    # Pomodoro özel tetikleme kontrolü
-    if "POMODORO_TRIGGER:" in (cevap or ""):
-        # AI pomodoro başlatmak istedi, inline butonlarla sor
-        ders = cevap.split("POMODORO_TRIGGER:")[1].split("\n")[0].strip() if "POMODORO_TRIGGER:" in cevap else "sat"
-        await _pomodoro_buton_gonder(update, context, ders)
+    # Pomodoro özel case
+    if cevap.startswith("⏱️ POMODORO:"):
+        ders = cevap.split(":")[1]
+        await bekle.delete()
+        asyncio.create_task(_pomodoro_dongusu(update, context, ders))
         return
 
-    # Cevabı gönder (uzunsa parçala)
-    if cevap:
-        await _uzun_mesaj_gonder(update, cevap)
+    # Cevabı gönder (4096 char limit)
+    await bekle.delete()
 
-
-async def _uzun_mesaj_gonder(update: Update, metin: str):
-    """4096 karakterden uzun mesajları parçalayarak gönder."""
-    MAX = 4000  # Telegram limiti 4096, biraz pay bırak
-
-    if len(metin) <= MAX:
-        try:
-            await update.message.reply_text(metin, parse_mode="Markdown")
-        except Exception:
-            # Markdown parse hatası olursa düz gönder
-            await update.message.reply_text(metin)
-        return
-
-    # Parçala
-    parcalar = []
-    while metin:
-        if len(metin) <= MAX:
-            parcalar.append(metin)
-            break
-
-        # En yakın satır sonundan kes
-        kesim = metin.rfind("\n", 0, MAX)
-        if kesim == -1:
-            kesim = MAX
-
-        parcalar.append(metin[:kesim])
-        metin = metin[kesim:].lstrip("\n")
-
-    for parca in parcalar:
-        try:
-            await update.message.reply_text(parca, parse_mode="Markdown")
-        except Exception:
+    if len(cevap) <= 4096:
+        await update.message.reply_text(cevap)
+    else:
+        parcalar = [cevap[i : i + 4096] for i in range(0, len(cevap), 4096)]
+        for parca in parcalar:
             await update.message.reply_text(parca)
-
-
-# ─── /start komutu ───────────────────────────────────────
-
-async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """İlk karşılama mesajı."""
-    bugun = date.today()
-    cents_kalan = (HEDEFLER["cents"]["sinav_tarihi"] - bugun).days
-    sat_kalan = (HEDEFLER["sat"]["sinav_tarihi"] - bugun).days
-    son_kilo = db.son_kilo()
-    kilo_str = f"{son_kilo['kilo']} kg" if son_kilo else "?"
-
-    mesaj = f"""🤖 *Selam! Ben senin kişisel asistanınım!*
-
-Benimle normal konuşabilirsin, ne istediğini anlarım.
-
-📋 *Hedeflerini biliyorum:*
-⚖️ Kilo: {kilo_str} → 75 kg
-📚 CENT-S: {'✅ Bitti' if cents_kalan < 0 else f'{cents_kalan} gün kaldı'}
-📚 SAT: {'✅ Bitti' if sat_kalan < 0 else f'{sat_kalan} gün kaldı'}
-
-💬 *Benimle şöyle konuşabilirsin:*
-• "81.5 kiloyum" → kaydederim
-• "1 saat SAT çalıştım" → kaydederim
-• "bugün ne yapayım" → plan yaparım
-• "ne yesem" → diyet önerisi veririm
-• "nasıl gidiyorum" → özet çıkarırım
-• "İstanbul'da güzel otel bul" → araştırırım
-• "masaüstündeki dosyaları göster" → gösteririm
-• "hava durumuna bak" → bakarım
-
-🧠 *Hiçbir komut ezberleme — sadece yaz!*"""
-
-    await update.message.reply_text(mesaj, parse_mode="Markdown")
-
-
-# ─── /id komutu ──────────────────────────────────────────
-
-async def id_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Kullanıcı ID'sini göster."""
-    await update.message.reply_text(
-        f"🆔 Telegram ID'n: `{update.effective_user.id}`\n"
-        f"Bunu `.env` dosyasındaki `TELEGRAM_USER_ID`'ye yaz.",
-        parse_mode="Markdown",
-    )
-
-
-# ─── Pomodoro Sistemi ────────────────────────────────────
-
-async def _pomodoro_buton_gonder(update: Update, context: ContextTypes.DEFAULT_TYPE, ders: str):
-    """Pomodoro başlatma butonları gönder."""
-    keyboard = [
-        [
-            InlineKeyboardButton(f"▶️ {ders.upper()} Pomodoro Başlat", callback_data=f"pomo_start_{ders}"),
-            InlineKeyboardButton("❌ Vazgeç", callback_data="pomo_iptal"),
-        ],
-    ]
-    await update.message.reply_text(
-        f"⏱️ *{ders.upper()} Pomodoro*\n{POMODORO_CALISMA_DK}dk çalış → {POMODORO_MOLA_DK}dk mola\n\nBaşlayalım mı?",
-        reply_markup=InlineKeyboardMarkup(keyboard),
-        parse_mode="Markdown",
-    )
-
-
-async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Inline buton callback'leri."""
-    query = update.callback_query
-    await query.answer()
-    data = query.data
-    user_id = query.from_user.id
-
-    if data.startswith("pomo_start_"):
-        ders = data.replace("pomo_start_", "")
-
-        if user_id in aktif_pomodorolar:
-            await query.edit_message_text("⚠️ Zaten aktif bir pomodoro var!")
-            return
-
-        await query.edit_message_text(
-            f"🔴 *{ders.upper()} Pomodoro Başladı!*\n\n"
-            f"⏱️ {POMODORO_CALISMA_DK} dakika — Konsantre ol! 💪\n"
-            f"_Bitince haber vereceğim..._",
-            parse_mode="Markdown",
-        )
-
-        task = asyncio.create_task(_pomodoro_timer(context, user_id, ders, update.effective_chat.id))
-        aktif_pomodorolar[user_id] = task
-
-    elif data == "pomo_iptal":
-        task = aktif_pomodorolar.pop(user_id, None)
-        if task:
-            task.cancel()
-        await query.edit_message_text("❌ Pomodoro iptal edildi.")
-
-    elif data.startswith("pomo_tekrar_"):
-        ders = data.replace("pomo_tekrar_", "")
-        await query.edit_message_text(
-            f"🔴 *{ders.upper()} Pomodoro Tekrar Başladı!*\n⏱️ {POMODORO_CALISMA_DK} dakika 💪",
-            parse_mode="Markdown",
-        )
-        task = asyncio.create_task(_pomodoro_timer(context, user_id, ders, update.effective_chat.id))
-        aktif_pomodorolar[user_id] = task
-
-    elif data.startswith("gorev_tamam_"):
-        gorev_id = int(data.replace("gorev_tamam_", ""))
-        db.gorev_tamamla(gorev_id)
-        await query.edit_message_text("✅ Görev tamamlandı!")
-
-    elif data.startswith("gorev_ertele_"):
-        gorev_id = int(data.replace("gorev_ertele_", ""))
-        db.gorev_ertele(gorev_id)
-        await query.edit_message_text("⏭️ Görev ertelendi.")
-
-
-async def _pomodoro_timer(context, user_id: int, ders: str, chat_id: int):
-    """Pomodoro zamanlayıcı."""
-    try:
-        await asyncio.sleep(POMODORO_CALISMA_DK * 60)
-        db.calisma_kaydet(ders, POMODORO_CALISMA_DK)
-
-        keyboard = [
-            [
-                InlineKeyboardButton("🔄 Tekrar", callback_data=f"pomo_tekrar_{ders}"),
-                InlineKeyboardButton("✅ Bitir", callback_data="pomo_iptal"),
-            ],
-        ]
-
-        await context.bot.send_message(
-            chat_id=chat_id,
-            text=f"✅ *{POMODORO_CALISMA_DK}dk {ders.upper()} tamamlandı!*\n\n"
-                 f"☕ {POMODORO_MOLA_DK}dk mola zamanı!\n"
-                 f"📊 Otomatik kaydedildi.",
-            reply_markup=InlineKeyboardMarkup(keyboard),
-            parse_mode="Markdown",
-        )
-    except asyncio.CancelledError:
-        pass
-    finally:
-        aktif_pomodorolar.pop(user_id, None)
-
-
-# ─── Yardımcılar ─────────────────────────────────────────
-
-def _kullanici_context_olustur() -> str:
-    """Kullanıcının mevcut durumunu AI'a context olarak hazırla."""
-    bugun = date.today()
-    satirlar = []
-
-    # Kilo
-    son_kilo = db.son_kilo()
-    if son_kilo:
-        satirlar.append(f"Son kilo: {son_kilo['kilo']} kg ({son_kilo['tarih']})")
-
-    # Bugünkü çalışma
-    gunluk = db.gunluk_calisma()
-    if gunluk:
-        satirlar.append("Bugünkü çalışma: " + ", ".join(f"{d.upper()}: {dk}dk" for d, dk in gunluk.items()))
-
-    # Sınavlar
-    for sinav in ["cents", "sat"]:
-        kalan = (HEDEFLER[sinav]["sinav_tarihi"] - bugun).days
-        if kalan >= 0:
-            satirlar.append(f"{HEDEFLER[sinav]['aciklama']}: {kalan} gün kaldı")
-
-    # Görevler
-    gorevler = db.gunun_gorevleri()
-    if gorevler:
-        bekleyen = [g for g in gorevler if g["durum"] == "bekliyor"]
-        if bekleyen:
-            satirlar.append(f"Bekleyen görevler: {', '.join(g['gorev'] for g in bekleyen)}")
-
-    return "\n".join(satirlar) if satirlar else "Henüz kayıt yok."

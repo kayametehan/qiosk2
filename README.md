@@ -1,78 +1,114 @@
-# 🤖 Kişisel Asistan Telegram Botu — AI Ajan
+# 🤖 Qiosk2 — Kişisel AI Asistan Telegram Botu
 
-Komut yok, sadece doğal konuş. Bot her şeyi anlar ve yapar.
-İnternette arar, dosyalarını yönetir, bilgisayarını kontrol eder.
+Tamamen Türkçe, sohbet odaklı kişisel asistan. OpenAI SDK yok — tüm bağımlılıklar açık kaynak.
 
-## 🧠 Nasıl Çalışır?
+## ✨ Özellikler
 
-Normal mesaj atarsın, AI anlayıp gerekli aksiyonları **kendisi** alır:
+### 🧠 AI Ajan (Çoklu Adım)
+- Doğal Türkçe sohbet ile her şeyi yapabilir
+- Karmaşık görevleri otomatik planlar ve adım adım çözer
+- Örnek: "Antalya'da otel ara" → arar → sayfaları okur → karşılaştırır → en iyileri sunar
 
-| Sen yazarsın | Bot yapar |
-|---|---|
-| "82 kiloyum" | ⚖️ Kilo kaydeder, hedefe kalan farkı söyler |
-| "1 saat SAT çalıştım" | 📚 Çalışmayı kaydeder, istatistik gösterir |
-| "bugün ne yapayım" | 📅 AI ile günlük plan oluşturur |
-| "ne yesem" | 🍽️ Yumurtasız, proteinli öğün önerir |
-| "nasıl gidiyorum" | 📈 Kilo, çalışma, sınav özeti çıkarır |
-| "İstanbul'da güzel otel bul" | 🔍 İnternette arar, sayfaları okur, karşılaştırır |
-| "masaüstündeki dosyaları göster" | 📁 Bilgisayardaki dosyaları listeler |
-| "hava durumuna bak" | 🌤️ İnternetten hava durumu çeker |
-| "spotify aç" | 🚀 Uygulamayı açar |
+### 🌐 Web Yetenekleri
+- DuckDuckGo ile web araması
+- Haber araması
+- Web sayfalarını okuma (yorumlar, fiyatlar, detaylar)
+- Dosya indirme
 
-## 🔧 Yetenekleri
+### 💻 Sistem Erişimi
+- Dosya okuma / yazma / arama
+- Klasör listeleme
+- Terminal komutları çalıştırma
+- Uygulama & URL açma
+- İşlem listesi & kapatma
+- Sistem bilgisi (CPU, RAM, Disk)
+- Ekran görüntüsü alma
+- Pano (clipboard) okuma/yazma
 
-- **🔍 Web Arama** — DuckDuckGo ile her şeyi arar
-- **📄 Sayfa Okuma** — Web sayfalarını okur (fiyatlar, yorumlar, bilgi)
-- **📁 Dosya Yönetimi** — Dosya okur, yazar, klasör listeler
-- **💻 Terminal** — Sistem komutları çalıştırır
-- **🚀 Uygulama** — URL/uygulama açar
-- **⚖️ Kilo Takibi** — Kayıt, trend, hedef analizi
-- **📚 Çalışma Takibi** — SAT & CENT-S seans kaydı
-- **📋 Görev Yönetimi** — Yapılacaklar listesi
-- **⏱️ Pomodoro** — 25dk/5dk zamanlayıcı
-- **🔔 Hatırlatmalar** — Sabah plan, ders, öğün, gün sonu
-- **🤖 Çok Adımlı Ajan** — Karmaşık görevleri adım adım çözer
+### 📊 Kişisel Takip
+- ⚖️ Kilo takibi (75 kg hedef)
+- 📚 Ders çalışma süresi (SAT & CENT-S)
+- ✅ Görev yönetimi
+- 🍽️ Öğün takibi
+- 🍅 Pomodoro zamanlayıcı
 
-## 🚀 Kurulum
+### ⏰ Otomatik Hatırlatmalar
+- Sabah planı (08:00)
+- Ders hatırlatmaları (10:00, 14:00)
+- Öğün hatırlatmaları (12:30, 19:00)
+- Gün sonu özet (22:00)
 
-### 1. Bağımlılıkları Kur
+## 🛠️ Kurulum
+
+### 1. Gereksinimler
+- Python 3.10+
+- Telegram Bot Token (@BotFather'dan al)
+- GitHub Personal Access Token (models:read scope)
+
+### 2. Kur
+
 ```bash
+git clone https://github.com/kayametehan/qiosk2.git
+cd qiosk2
 pip install -r requirements.txt
 ```
 
-### 2. .env Dosyasını Ayarla
+### 3. Ayarla
+
 ```bash
 copy .env.example .env
 ```
 
-Düzenle:
+`.env` dosyasını düzenle:
 ```
-TELEGRAM_BOT_TOKEN=...    # @BotFather'dan al
-GITHUB_TOKEN=...          # github.com/settings/tokens → models:read
-TELEGRAM_USER_ID=...      # Botu başlat, /id yaz, öğren
+TELEGRAM_BOT_TOKEN=bot_tokenin
+GITHUB_TOKEN=github_pat_tokenin
+TELEGRAM_USER_ID=senin_telegram_idn
 ```
 
-### 3. Çalıştır
+Telegram ID'ni öğrenmek için botu başlat ve `/id` yaz.
+
+### 4. Çalıştır
+
+**Windows:**
+```
+start_bot.bat
+```
+
+**Manuel:**
 ```bash
 python main.py
 ```
-Windows'ta: `start_bot.bat` çift tıkla
 
-## 📁 Yapı
+## 📁 Proje Yapısı
 
 ```
 qiosk2/
-├── main.py                     # Giriş noktası
-├── config.py                   # Ayarlar ve hedefler
-├── requirements.txt
-├── start_bot.bat               # Windows başlatıcı
+├── main.py                      # Ana giriş
+├── config.py                    # Ayarlar & system prompt
+├── requirements.txt             # Bağımlılıklar (hepsi açık kaynak)
+├── start_bot.bat                # Windows başlatıcı
+├── .env.example                 # Ortam değişkenleri şablonu
 └── bot/
-    ├── database.py             # SQLite veritabanı
+    ├── database.py              # SQLite veri katmanı
     ├── handlers/
-    │   └── sohbet.py           # Ana mesaj işleyici + agent tool executor
+    │   └── sohbet.py            # Mesaj handler & tool executor
     └── services/
-        ├── ai_service.py       # AI agent loop + function calling
-        ├── web_service.py      # Web arama + sayfa okuma
-        ├── system_service.py   # Dosya + sistem işlemleri
-        └── hatirlatici.py      # Zamanlı bildirimler
+        ├── ai_service.py        # GitHub Models API (raw httpx)
+        ├── web_service.py       # Web arama, sayfa okuma, indirme
+        ├── system_service.py    # Dosya, sistem, işlem yönetimi
+        └── hatirlatici.py       # Zamanlanmış hatırlatmalar
 ```
+
+## 🔧 Teknik Detaylar
+
+- **AI**: GitHub Models API (`openai/gpt-4o-mini`) — doğrudan httpx ile, OpenAI SDK yok
+- **Telegram**: python-telegram-bot 21.3 (polling mode)
+- **Veritabanı**: SQLite (yerel, sunucu gerektirmez)
+- **Zamanlama**: APScheduler (AsyncIOScheduler)
+- **Web**: DuckDuckGo Search + BeautifulSoup4
+- **Sistem**: psutil + Pillow + pyperclip
+
+## 📝 Lisans
+
+Kişisel kullanım.

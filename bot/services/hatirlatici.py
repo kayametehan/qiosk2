@@ -1,133 +1,149 @@
 """
-Hatırlatıcı Servisi - Zamanlı bildirimler
+Hatırlatıcı Servisi — Günlük otomatik hatırlatmalar.
+APScheduler ile belirlenen saatlerde motivasyon ve durum mesajları.
 """
 
 import logging
 from datetime import date
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from telegram.ext import Application
+from apscheduler.triggers.cron import CronTrigger
 
+from bot.database import gunluk_calisma, gunun_gorevleri, son_kilo
+from bot.services.ai_service import basit_cevap
 from config import HATIRLATMALAR, HEDEFLER, TELEGRAM_USER_ID
-from bot import database as db
-from bot.services.ai_service import basit_ai_cevap
 
 logger = logging.getLogger(__name__)
 
 
-async def _gonder(app: Application, mesaj: str):
-    """Kullanıcıya mesaj gönder."""
-    if TELEGRAM_USER_ID == 0:
-        return
-    try:
-        await app.bot.send_message(chat_id=TELEGRAM_USER_ID, text=mesaj, parse_mode="Markdown")
-    except Exception as e:
-        logger.error(f"Hatırlatma gönderilemedi: {e}")
-
-
-async def sabah_plani(app: Application):
-    """08:00 — Sabah motivasyon + plan."""
+def _ozet_context() -> str:
+    """AI'ya verilecek günlük özet."""
     bugun = date.today()
-    son_kilo = db.son_kilo()
-    kilo_str = f"Son kilo: {son_kilo['kilo']} kg" if son_kilo else ""
+    parcalar = [f"Tarih: {bugun.strftime('%d %B %Y')}"]
 
-    cents_kalan = (HEDEFLER["cents"]["sinav_tarihi"] - bugun).days
-    sat_kalan = (HEDEFLER["sat"]["sinav_tarihi"] - bugun).days
+    sk = son_kilo()
+    if sk:
+        parcalar.append(f"Son kilo: {sk['kilo']} kg")
 
-    prompt = f"""Günaydın mesajı + bugünün kısa planını yap.
-{kilo_str}
-CENT-S'e {cents_kalan} gün, SAT'a {sat_kalan} gün kaldı.
-Bugün hangi derse öncelik vermeli, kaç saat çalışmalı, öğün önerileri ver.
-Kısa ve motive edici tut."""
-
-    cevap = basit_ai_cevap(prompt)
-    await _gonder(app, f"☀️ {cevap}")
-
-
-async def ders_hatirlatma(app: Application):
-    """10:00, 14:00 — Ders hatırlatması."""
-    bugun = date.today()
-    gunluk = db.gunluk_calisma()
-    toplam = sum(gunluk.values()) if gunluk else 0
-
-    cents_kalan = (HEDEFLER["cents"]["sinav_tarihi"] - bugun).days
-    sat_kalan = (HEDEFLER["sat"]["sinav_tarihi"] - bugun).days
-
-    if cents_kalan < 0 and sat_kalan < 0:
-        return  # Sınavlar bitti
-
-    mesaj = "📚 *Ders Zamanı!*\n\n"
-
-    if cents_kalan > 0:
-        mesaj += f"⚡ CENT-S'e *{cents_kalan} gün* — "
-    if sat_kalan > 0:
-        mesaj += f"📖 SAT'a *{sat_kalan} gün*\n"
-
-    if toplam > 0:
-        mesaj += f"\n📊 Bugün {toplam}dk çalıştın. "
-        mesaj += "Devam et! 💪" if toplam >= 60 else "Biraz daha!"
+    gc = gunluk_calisma()
+    if gc:
+        parcalar.append("Bugünkü çalışma: " + ", ".join(f"{k}: {v}dk" for k, v in gc.items()))
     else:
-        mesaj += "\n⏰ Bugün henüz başlamadın, haydi!"
+        parcalar.append("Bugün henüz çalışma yok")
 
-    await _gonder(app, mesaj)
+    gorevler = gunun_gorevleri()
+    bekleyen = [g for g in gorevler if g["durum"] == "bekliyor"]
+    if bekleyen:
+        parcalar.append(f"Bekleyen görevler: {len(bekleyen)}")
+
+    cents_kalan = (HEDEFLER["cents"]["sinav_tarihi"] - bugun).days
+    sat_kalan = (HEDEFLER["sat"]["sinav_tarihi"] - bugun).days
+    parcalar.append(f"CENT-S: {cents_kalan} gün, SAT: {sat_kalan} gün kaldı")
+
+    return "\n".join(parcalar)
 
 
-async def ogun_hatirlatma(app: Application, ogun: str = "öğle"):
-    """12:30, 19:00 — Öğün hatırlatması."""
-    mesaj = (
-        f"🍽️ *{ogun.title()} Zamanı!*\n\n"
-        f"💡 Protein ağırlıklı beslen\n"
-        f"🥤 Protein shake'ini unutma\n"
-        f"💧 Su iç!\n\n"
-        f"_Ne yesem diye sor, öneri yapayım_ 😊"
+async def _sabah_plani(bot):
+    """Sabah motivasyon + günlük plan önerisi."""
+    context = _ozet_context()
+    prompt = (
+        f"Sabah hatırlatması yap. Günaydın de, bugünkü durumu özetle, "
+        f"kısa bir plan öner. Motive edici ol.\n\nDurum:\n{context}"
     )
-    await _gonder(app, mesaj)
+    mesaj = basit_cevap(prompt)
+    try:
+        await bot.send_message(chat_id=TELEGRAM_USER_ID, text=mesaj)
+    except Exception as e:
+        logger.error(f"Sabah mesajı gönderilemedi: {e}")
 
 
-async def gun_sonu(app: Application):
-    """22:00 — Gün sonu değerlendirmesi."""
-    gunluk = db.gunluk_calisma()
-    son_kilo = db.son_kilo()
-
-    calisma_str = ", ".join(f"{d.upper()}: {dk}dk" for d, dk in gunluk.items()) if gunluk else "Çalışma yok"
-    kilo_str = f"{son_kilo['kilo']} kg" if son_kilo else "Kayıt yok"
-
-    prompt = f"""Gün sonu kısa değerlendirme yap:
-Çalışma: {calisma_str}
-Kilo: {kilo_str}
-Neleri iyi yaptım, yarın ne yapmalıyım? 2-3 cümle yeter."""
-
-    cevap = basit_ai_cevap(prompt)
-    mesaj = f"🌙 *Gün Sonu*\n\n{cevap}"
-
-    # Kilo girişi kontrolü
-    bugun = date.today().isoformat()
-    gecmis = db.kilo_gecmisi(1)
-    if not gecmis or gecmis[0]["tarih"] != bugun:
-        mesaj += "\n\n⚖️ _Bugün kilo girmedin! Kaç kilosun yaz_"
-
-    await _gonder(app, mesaj)
+async def _ders_hatirlatma(bot, seans: int):
+    """Ders çalışma hatırlatması."""
+    context = _ozet_context()
+    prompt = (
+        f"Ders çalışma hatırlatması yap (seans {seans}). "
+        f"Bugünkü çalışma durumuna göre motive et, pomodoro öner.\n\nDurum:\n{context}"
+    )
+    mesaj = basit_cevap(prompt)
+    try:
+        await bot.send_message(chat_id=TELEGRAM_USER_ID, text=mesaj)
+    except Exception as e:
+        logger.error(f"Ders hatırlatma gönderilemedi: {e}")
 
 
-def hatirlatici_kur(app: Application) -> AsyncIOScheduler:
-    """Tüm hatırlatıcıları kur."""
-    scheduler = AsyncIOScheduler(timezone="Europe/Istanbul")
+async def _ogun_hatirlatma(bot, ogun: str):
+    """Öğün hatırlatması — sağlıklı beslenme önerisi."""
+    prompt = (
+        f"{ogun} vakti! Sağlıklı bir {ogun.lower()} önerisi yap. "
+        f"Kullanıcı 75 kg hedefli, yumurta yemez, karamelli protein tozu var. "
+        f"Kısa ve pratik öner."
+    )
+    mesaj = basit_cevap(prompt)
+    try:
+        await bot.send_message(chat_id=TELEGRAM_USER_ID, text=mesaj)
+    except Exception as e:
+        logger.error(f"Öğün hatırlatma gönderilemedi: {e}")
 
-    s, d = HATIRLATMALAR["sabah_plani"]
-    scheduler.add_job(sabah_plani, "cron", hour=s, minute=d, args=[app], id="sabah")
 
-    for key in ["ders_hatirlatma_1", "ders_hatirlatma_2"]:
-        s, d = HATIRLATMALAR[key]
-        scheduler.add_job(ders_hatirlatma, "cron", hour=s, minute=d, args=[app], id=key)
+async def _gun_sonu_ozet(bot):
+    """Gün sonu performans özeti."""
+    context = _ozet_context()
+    prompt = (
+        f"Gün sonu özeti yap. Bugün ne yapıldı, ne eksik kaldı, yarın için öneriler. "
+        f"Kısa ve yapıcı ol.\n\nDurum:\n{context}"
+    )
+    mesaj = basit_cevap(prompt)
+    try:
+        await bot.send_message(chat_id=TELEGRAM_USER_ID, text=mesaj)
+    except Exception as e:
+        logger.error(f"Gün sonu özeti gönderilemedi: {e}")
 
-    s, d = HATIRLATMALAR["ogun_ogle"]
-    scheduler.add_job(ogun_hatirlatma, "cron", hour=s, minute=d, args=[app, "öğle"], id="ogle")
 
-    s, d = HATIRLATMALAR["ogun_aksam"]
-    scheduler.add_job(ogun_hatirlatma, "cron", hour=s, minute=d, args=[app, "akşam"], id="aksam")
+def hatirlaticilari_kur(scheduler: AsyncIOScheduler, bot):
+    """Tüm zamanlanmış hatırlatıcıları kur."""
 
-    s, d = HATIRLATMALAR["gun_sonu_ozet"]
-    scheduler.add_job(gun_sonu, "cron", hour=s, minute=d, args=[app], id="gece")
+    h = HATIRLATMALAR
 
-    logger.info("✅ Hatırlatıcılar kuruldu")
-    return scheduler
+    # Sabah planı
+    saat, dk = h["sabah_plani"]
+    scheduler.add_job(
+        _sabah_plani, CronTrigger(hour=saat, minute=dk),
+        args=[bot], id="sabah_plani", replace_existing=True,
+    )
+
+    # Ders hatırlatma 1
+    saat, dk = h["ders_hatirlatma_1"]
+    scheduler.add_job(
+        _ders_hatirlatma, CronTrigger(hour=saat, minute=dk),
+        args=[bot, 1], id="ders_hatirlatma_1", replace_existing=True,
+    )
+
+    # Ders hatırlatma 2
+    saat, dk = h["ders_hatirlatma_2"]
+    scheduler.add_job(
+        _ders_hatirlatma, CronTrigger(hour=saat, minute=dk),
+        args=[bot, 2], id="ders_hatirlatma_2", replace_existing=True,
+    )
+
+    # Öğle öğünü
+    saat, dk = h["ogun_ogle"]
+    scheduler.add_job(
+        _ogun_hatirlatma, CronTrigger(hour=saat, minute=dk),
+        args=[bot, "Öğle"], id="ogun_ogle", replace_existing=True,
+    )
+
+    # Akşam öğünü
+    saat, dk = h["ogun_aksam"]
+    scheduler.add_job(
+        _ogun_hatirlatma, CronTrigger(hour=saat, minute=dk),
+        args=[bot, "Akşam"], id="ogun_aksam", replace_existing=True,
+    )
+
+    # Gün sonu özet
+    saat, dk = h["gun_sonu_ozet"]
+    scheduler.add_job(
+        _gun_sonu_ozet, CronTrigger(hour=saat, minute=dk),
+        args=[bot], id="gun_sonu_ozet", replace_existing=True,
+    )
+
+    logger.info("⏰ Tüm hatırlatıcılar kuruldu.")

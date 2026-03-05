@@ -1,10 +1,11 @@
 """
-Web Servisi - İnternet araması ve sayfa okuma
-DuckDuckGo ile arama, httpx + BeautifulSoup ile sayfa içeriği çekme.
+Web Servisi — DuckDuckGo arama, sayfa okuma, haber arama, dosya indirme.
+Tüm bağımlılıklar açık kaynak: duckduckgo-search, beautifulsoup4, httpx.
 """
 
 import logging
-import re
+from pathlib import Path
+from datetime import datetime
 
 import httpx
 from bs4 import BeautifulSoup
@@ -12,13 +13,14 @@ from duckduckgo_search import DDGS
 
 logger = logging.getLogger(__name__)
 
-# httpx client ayarları
-_HEADERS = {
+HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
                   "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-    "Accept-Language": "tr-TR,tr;q=0.9,en-US;q=0.8,en;q=0.7",
+    "Accept-Language": "tr-TR,tr;q=0.9,en;q=0.8",
 }
 
+
+# ─── Web Arama ────────────────────────────────────────────
 
 def web_ara(sorgu: str, max_sonuc: int = 8) -> str:
     """DuckDuckGo ile web araması yap."""
@@ -27,98 +29,156 @@ def web_ara(sorgu: str, max_sonuc: int = 8) -> str:
             sonuclar = list(ddgs.text(sorgu, region="tr-tr", max_results=max_sonuc))
 
         if not sonuclar:
-            return "Arama sonucu bulunamadı."
+            return f"🔍 '{sorgu}' için sonuç bulunamadı."
 
-        cikti = f"🔍 '{sorgu}' için {len(sonuclar)} sonuç:\n\n"
+        cikti = f"🔍 '{sorgu}' arama sonuçları:\n\n"
         for i, s in enumerate(sonuclar, 1):
             cikti += f"{i}. **{s.get('title', 'Başlıksız')}**\n"
-            cikti += f"   🔗 {s.get('href', '')}\n"
-            cikti += f"   {s.get('body', '')[:200]}\n\n"
+            cikti += f"   {s.get('href', '')}\n"
+            body = s.get("body", "")
+            if body:
+                cikti += f"   {body[:200]}\n"
+            cikti += "\n"
 
         return cikti
-
     except Exception as e:
         logger.error(f"Web arama hatası: {e}")
-        return f"Arama sırasında hata oluştu: {str(e)}"
+        return f"❌ Arama hatası: {str(e)}"
 
 
-def sayfa_oku(url: str, max_karakter: int = 8000) -> str:
-    """Bir web sayfasının ana içeriğini oku ve temiz metin olarak döndür."""
-    try:
-        with httpx.Client(headers=_HEADERS, follow_redirects=True, timeout=15) as client:
-            response = client.get(url)
-            response.raise_for_status()
-
-        soup = BeautifulSoup(response.text, "html.parser")
-
-        # Gereksiz elementleri kaldır
-        for tag in soup(["script", "style", "nav", "footer", "header", "aside",
-                         "iframe", "noscript", "svg", "form"]):
-            tag.decompose()
-
-        # Meta bilgilerini al
-        title = soup.title.string.strip() if soup.title and soup.title.string else "Başlık yok"
-        meta_desc = ""
-        meta_tag = soup.find("meta", attrs={"name": "description"})
-        if meta_tag:
-            meta_desc = meta_tag.get("content", "")
-
-        # Ana içeriği bul — article > main > body sıralamasıyla
-        content_elem = (
-            soup.find("article")
-            or soup.find("main")
-            or soup.find("div", class_=re.compile(r"content|article|post|entry", re.I))
-            or soup.body
-        )
-
-        if not content_elem:
-            return f"Sayfa içeriği çıkarılamadı: {url}"
-
-        # Metin çıkar
-        text = content_elem.get_text(separator="\n", strip=True)
-
-        # Fazla boşlukları temizle
-        text = re.sub(r"\n{3,}", "\n\n", text)
-        text = re.sub(r" {2,}", " ", text)
-
-        # Uzunluk sınırı
-        if len(text) > max_karakter:
-            text = text[:max_karakter] + "\n\n[... içerik kesildi ...]"
-
-        cikti = f"📄 **{title}**\n🔗 {url}\n"
-        if meta_desc:
-            cikti += f"📝 {meta_desc}\n"
-        cikti += f"\n{text}"
-
-        return cikti
-
-    except httpx.HTTPStatusError as e:
-        return f"Sayfa açılamadı (HTTP {e.response.status_code}): {url}"
-    except httpx.ConnectError:
-        return f"Bağlantı kurulamadı: {url}"
-    except Exception as e:
-        logger.error(f"Sayfa okuma hatası: {e}")
-        return f"Sayfa okunurken hata: {str(e)[:200]}"
-
-
-def haber_ara(sorgu: str, max_sonuc: int = 5) -> str:
+def haber_ara(sorgu: str, max_sonuc: int = 6) -> str:
     """DuckDuckGo ile haber araması yap."""
     try:
         with DDGS() as ddgs:
             sonuclar = list(ddgs.news(sorgu, region="tr-tr", max_results=max_sonuc))
 
         if not sonuclar:
-            return "Haber bulunamadı."
+            return f"📰 '{sorgu}' ile ilgili haber bulunamadı."
 
         cikti = f"📰 '{sorgu}' haberleri:\n\n"
         for i, s in enumerate(sonuclar, 1):
-            cikti += f"{i}. **{s.get('title', '')}**\n"
-            cikti += f"   📅 {s.get('date', '')}\n"
+            cikti += f"{i}. **{s.get('title', 'Başlıksız')}**\n"
+            cikti += f"   📅 {s.get('date', 'Tarih yok')}\n"
             cikti += f"   🔗 {s.get('url', '')}\n"
-            cikti += f"   {s.get('body', '')[:150]}\n\n"
+            body = s.get("body", "")
+            if body:
+                cikti += f"   {body[:180]}\n"
+            cikti += "\n"
 
         return cikti
-
     except Exception as e:
         logger.error(f"Haber arama hatası: {e}")
-        return f"Haber aranırken hata: {str(e)}"
+        return f"❌ Haber arama hatası: {str(e)}"
+
+
+# ─── Sayfa Oku ────────────────────────────────────────────
+
+def sayfa_oku(url: str) -> str:
+    """Web sayfasını oku ve ana içeriği çıkar."""
+    try:
+        with httpx.Client(
+            headers=HEADERS, timeout=20, follow_redirects=True, verify=False
+        ) as client:
+            response = client.get(url)
+            response.raise_for_status()
+
+        soup = BeautifulSoup(response.text, "html.parser")
+
+        # Gereksiz etiketleri sil
+        for tag in soup(["script", "style", "nav", "footer", "header",
+                         "aside", "iframe", "noscript", "form", "button"]):
+            tag.decompose()
+
+        # Başlık
+        baslik = ""
+        title_tag = soup.find("title")
+        if title_tag:
+            baslik = title_tag.get_text(strip=True)
+
+        # Meta açıklama
+        aciklama = ""
+        meta = soup.find("meta", attrs={"name": "description"})
+        if meta:
+            aciklama = meta.get("content", "")
+
+        # Ana içerik — article > main > body
+        icerik_element = (
+            soup.find("article")
+            or soup.find("main")
+            or soup.find("div", class_="content")
+            or soup.find("div", id="content")
+            or soup.body
+        )
+
+        if icerik_element:
+            metin = icerik_element.get_text(separator="\n", strip=True)
+        else:
+            metin = soup.get_text(separator="\n", strip=True)
+
+        # Boş satırları temizle
+        satirlar = [s.strip() for s in metin.split("\n") if s.strip()]
+        metin = "\n".join(satirlar)
+
+        # Kısalt
+        if len(metin) > 8000:
+            metin = metin[:8000] + "\n\n[... kesildi ...]"
+
+        cikti = f"🌐 {url}\n"
+        if baslik:
+            cikti += f"📌 {baslik}\n"
+        if aciklama:
+            cikti += f"📝 {aciklama}\n"
+        cikti += f"\n{metin}"
+
+        return cikti
+    except httpx.HTTPStatusError as e:
+        return f"❌ HTTP hatası ({e.response.status_code}): {url}"
+    except Exception as e:
+        logger.error(f"Sayfa okuma hatası: {e}")
+        return f"❌ Sayfa okunamadı: {str(e)}"
+
+
+# ─── Dosya İndir ──────────────────────────────────────────
+
+def dosya_indir(url: str, kayit_yolu: str = None) -> str:
+    """URL'den dosya indir."""
+    try:
+        if not kayit_yolu:
+            # URL'den dosya adını çıkar
+            from urllib.parse import urlparse, unquote
+            parsed = urlparse(url)
+            dosya_adi = unquote(parsed.path.split("/")[-1]) or "indirilen_dosya"
+            indirilenler = Path.home() / "Downloads"
+            indirilenler.mkdir(parents=True, exist_ok=True)
+            kayit_yolu = str(indirilenler / dosya_adi)
+
+        kayit = Path(kayit_yolu)
+        kayit.parent.mkdir(parents=True, exist_ok=True)
+
+        with httpx.Client(
+            headers=HEADERS, timeout=120, follow_redirects=True, verify=False
+        ) as client:
+            with client.stream("GET", url) as response:
+                response.raise_for_status()
+                toplam = int(response.headers.get("content-length", 0))
+
+                with open(kayit, "wb") as f:
+                    indirilen = 0
+                    for chunk in response.iter_bytes(chunk_size=8192):
+                        f.write(chunk)
+                        indirilen += len(chunk)
+
+        boyut = kayit.stat().st_size
+        if boyut < 1024:
+            b = f"{boyut} B"
+        elif boyut < 1048576:
+            b = f"{boyut/1024:.1f} KB"
+        else:
+            b = f"{boyut/1048576:.1f} MB"
+
+        return f"✅ İndirildi: {kayit} ({b})"
+    except httpx.HTTPStatusError as e:
+        return f"❌ İndirme HTTP hatası ({e.response.status_code}): {url}"
+    except Exception as e:
+        logger.error(f"Dosya indirme hatası: {e}")
+        return f"❌ İndirme hatası: {str(e)}"

@@ -1,6 +1,6 @@
 """
-Kişisel Asistan Bot - Yapılandırma
-Tamamen sohbet odaklı, tam yerel erişimli AI ajan.
+Yapılandırma — Sohbet odaklı AI Ajan, tamamen açık kaynak.
+OpenAI SDK yok — GitHub Models API'ye doğrudan httpx ile bağlanır.
 """
 
 import os
@@ -16,30 +16,24 @@ TELEGRAM_USER_ID = int(os.getenv("TELEGRAM_USER_ID", "0"))
 
 # ─── AI Model ─────────────────────────────────────────────
 AI_MODEL = "openai/gpt-4o-mini"
-AI_BASE_URL = "https://models.github.ai/inference"
+AI_API_URL = "https://models.github.ai/inference/chat/completions"
 
-# ─── Ajan Ayarları ─────────────────────────────────────────
-MAX_AGENT_STEPS = 15  # Bir görevde maksimum adım sayısı
-AGENT_TIMEOUT = 120   # Saniye cinsinden timeout
+# ─── Ajan ──────────────────────────────────────────────────
+MAX_AGENT_STEPS = 15
+AGENT_TIMEOUT = 120
 
-# ─── Kişisel Hedefler ─────────────────────────────────────
+# ─── Hedefler ─────────────────────────────────────────────
 HEDEFLER = {
     "kilo": {
         "hedef_kg": 75.0,
         "aciklama": "75 kg'a düşmek",
         "kisitlamalar": ["Yumurta yemez", "Karamelli protein tozu var"],
     },
-    "sat": {
-        "sinav_tarihi": date(2026, 3, 14),
-        "aciklama": "SAT Sınavı",
-    },
-    "cents": {
-        "sinav_tarihi": date(2026, 3, 12),
-        "aciklama": "CENT-S Sınavı",
-    },
+    "sat": {"sinav_tarihi": date(2026, 3, 14), "aciklama": "SAT Sınavı"},
+    "cents": {"sinav_tarihi": date(2026, 3, 12), "aciklama": "CENT-S Sınavı"},
 }
 
-# ─── Hatırlatma Saatleri ───────────────────────────────────
+# ─── Hatırlatmalar ─────────────────────────────────────────
 HATIRLATMALAR = {
     "sabah_plani": (8, 0),
     "ders_hatirlatma_1": (10, 0),
@@ -49,16 +43,13 @@ HATIRLATMALAR = {
     "gun_sonu_ozet": (22, 0),
 }
 
-# ─── Pomodoro ──────────────────────────────────────────────
 POMODORO_CALISMA_DK = 25
 POMODORO_MOLA_DK = 5
-
-# ─── Veritabanı ───────────────────────────────────────────
 DB_PATH = os.path.join(os.path.dirname(__file__), "asistan.db")
 
 # ─── System Prompt ─────────────────────────────────────────
 SYSTEM_PROMPT = """Sen benim kişisel AI asistanımsın. Bilgisayarıma tam erişimin var.
-Türkçe konuşuyorsun. Samimi, doğal ve arkadaşça davranıyorsun.
+Tamamen Türkçe, samimi ve arkadaşça konuşuyorsun.
 
 BENİM HEDEFLER:
 1. 🏋️ 75 kg hedefi (yumurta yemem, karamelli protein tozum var)
@@ -74,14 +65,19 @@ SENİN YETENEKLERİN:
 - Klasörleri listeleyebilirsin
 - Terminal komutları çalıştırabilirsin
 - Uygulama ve URL açabilirsin
+- Dosya arayabilirsin (ada veya içeriğe göre)
+- İnternetten dosya indirebilirsin
+- Ekran görüntüsü alabilirsin
+- Panoya kopyalayabilirsin
+- Çalışan işlemleri görebilir/kapatabilirsin
+- Sistem bilgisi alabilirsin
 - Kilo, çalışma, görev takibi yapabilirsin
+- Not tutabilirsin
 
 ÇALIŞMA PRENSİPLERİN:
-- Kullanıcı bir şey istediğinde, gerekli tüm adımları KENDIN planla ve uygula
-- Bir araştırma görevi geldiğinde: ara → sayfaları oku → karşılaştır → en iyi sonuçları sun
-- Tek seferde birden fazla tool çağrısı yapabilirsin, karmaşık görevleri adım adım çöz
-- Her adımda ne yaptığını kısaca açıkla
-- Sonuçları düzenli ve okunabilir şekilde sun
-- Normal sohbetlerde tool çağırma, sadece doğal cevap ver
-- Kısa, net, emoji'li ama abartısız mesajlar yaz
+- Kullanıcı bir şey istediğinde, gerekli tüm adımları KENDİN planla ve uygula
+- Araştırma görevi: ara → sayfaları oku → karşılaştır → en iyileri sun
+- Karmaşık görevleri adım adım, birden fazla tool çağrısıyla çöz
+- Normal sohbetlerde tool çağırma, samimi cevap ver
+- Kısa, net, emoji'li ama abartısız Telegram mesajları yaz
 """

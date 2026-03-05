@@ -1,6 +1,6 @@
 """
-AI Servis - Agent Loop ile Çok Adımlı Görev Çözücü
-Kullanıcı bir şey istediğinde AI kendi başına tool'ları zincirleyerek çözer.
+AI Servisi — OpenAI SDK yok, doğrudan httpx ile GitHub Models API.
+Tamamen açık kaynak bağımlılıklar.
 """
 
 import json
@@ -8,14 +8,13 @@ import logging
 from datetime import date
 from typing import Callable, Optional
 
-from openai import OpenAI
+import httpx
 
-from config import AI_BASE_URL, AI_MODEL, GITHUB_TOKEN, HEDEFLER, MAX_AGENT_STEPS, SYSTEM_PROMPT
+from config import AI_API_URL, AI_MODEL, GITHUB_TOKEN, HEDEFLER, MAX_AGENT_STEPS, SYSTEM_PROMPT
 
 logger = logging.getLogger(__name__)
 
-
-# ─── Tool Tanımları (AI bunlardan seçer) ──────────────────
+# ─── Tool Tanımları ───────────────────────────────────────
 
 TOOLS = [
     # --- Web ---
@@ -23,7 +22,7 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "web_ara",
-            "description": "İnternette arama yap. Otel, restoran, ürün, bilgi, haber — her şeyi arayabilir. Türkçe veya İngilizce arama yapabilir.",
+            "description": "İnternette arama yap. Otel, restoran, ürün, bilgi, haber — her şeyi ara.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -38,11 +37,11 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "sayfa_oku",
-            "description": "Bir web sayfasının içeriğini oku. URL ver, sayfadaki metni, yorumları, fiyatları çeker. Arama sonuçlarındaki linkleri detaylı incelemek için kullan.",
+            "description": "Web sayfasının içeriğini oku. Yorumlar, fiyatlar, detaylar çekilir. Arama sonuçlarındaki linkleri incelemek için kullan.",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "url": {"type": "string", "description": "Okunacak sayfanın URL'si"},
+                    "url": {"type": "string", "description": "Okunacak URL"},
                 },
                 "required": ["url"],
             },
@@ -62,16 +61,31 @@ TOOLS = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "dosya_indir",
+            "description": "İnternetten dosya indir (resim, PDF, vs). URL ve kayıt yolunu ver.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "url": {"type": "string", "description": "İndirilecek dosyanın URL'si"},
+                    "kayit_yolu": {"type": "string", "description": "Kayıt edilecek dosya yolu"},
+                },
+                "required": ["url", "kayit_yolu"],
+            },
+        },
+    },
     # --- Dosya Sistemi ---
     {
         "type": "function",
         "function": {
             "name": "dosya_oku",
-            "description": "Bilgisayardaki bir dosyanın içeriğini oku. Tam yol ver.",
+            "description": "Bilgisayardaki bir dosyanın içeriğini oku.",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "yol": {"type": "string", "description": "Dosya yolu (ör: C:/Users/kullanici/belge.txt veya ~/Desktop/notlar.md)"},
+                    "yol": {"type": "string", "description": "Dosya yolu"},
                 },
                 "required": ["yol"],
             },
@@ -81,7 +95,7 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "dosya_yaz",
-            "description": "Bir dosyaya içerik yaz. Dosya yoksa oluşturur, varsa üzerine yazar.",
+            "description": "Bir dosyaya içerik yaz. Not tutmak, rapor kaydetmek için de kullan.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -96,14 +110,30 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "dosya_listele",
-            "description": "Bir klasörün içeriğini listele. Dosya ve alt klasörleri gösterir.",
+            "description": "Klasör içeriğini listele.",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "yol": {"type": "string", "description": "Klasör yolu (varsayılan: mevcut dizin)"},
-                    "detayli": {"type": "boolean", "description": "Dosya boyutlarını da göster"},
+                    "yol": {"type": "string", "description": "Klasör yolu"},
+                    "detayli": {"type": "boolean", "description": "Boyut bilgisi göster"},
                 },
                 "required": ["yol"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "dosya_ara",
+            "description": "Bilgisayarda dosya ara. İsme göre veya içeriğe göre arayabilir.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "baslangic_yolu": {"type": "string", "description": "Aramaya başlanacak klasör"},
+                    "desen": {"type": "string", "description": "Dosya adı deseni (ör: *.pdf, rapor*)"},
+                    "icerik_ara": {"type": "string", "description": "Dosya içinde aranacak metin (opsiyonel)"},
+                },
+                "required": ["baslangic_yolu", "desen"],
             },
         },
     },
@@ -112,12 +142,12 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "komut_calistir",
-            "description": "Terminal/komut satırında bir komut çalıştır. Herhangi bir shell komutu çalıştırabilir.",
+            "description": "Terminal/shell komutu çalıştır. Her türlü sistem komutu.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "komut": {"type": "string", "description": "Çalıştırılacak komut"},
-                    "cwd": {"type": "string", "description": "Çalışma dizini (isteğe bağlı)"},
+                    "cwd": {"type": "string", "description": "Çalışma dizini (opsiyonel)"},
                 },
                 "required": ["komut"],
             },
@@ -127,11 +157,11 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "uygulama_ac",
-            "description": "Bir URL'yi tarayıcıda aç veya bir dosya/uygulamayı varsayılan programla aç.",
+            "description": "URL'yi tarayıcıda aç veya dosya/uygulamayı varsayılan programla aç.",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "hedef": {"type": "string", "description": "Açılacak URL, dosya yolu veya uygulama"},
+                    "hedef": {"type": "string", "description": "URL, dosya yolu veya uygulama adı"},
                 },
                 "required": ["hedef"],
             },
@@ -141,7 +171,69 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "sistem_bilgisi",
-            "description": "Bilgisayarın CPU, RAM, disk kullanımını göster.",
+            "description": "CPU, RAM, disk kullanımı ve sistem bilgilerini göster.",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "islem_listele",
+            "description": "Çalışan işlemleri listele. İsme göre filtreleyebilir.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "filtre": {"type": "string", "description": "İşlem adı filtresi (opsiyonel)"},
+                },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "islem_kapat",
+            "description": "Çalışan bir işlemi (programı) kapat.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "islem_adi": {"type": "string", "description": "Kapatılacak işlem adı"},
+                },
+                "required": ["islem_adi"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "ekran_goruntusu",
+            "description": "Ekran görüntüsü al ve kaydet.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "kayit_yolu": {"type": "string", "description": "Kayıt yolu (opsiyonel, varsayılan masaüstü)"},
+                },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "panoya_kopyala",
+            "description": "Metni panoya (clipboard) kopyala.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "metin": {"type": "string", "description": "Kopyalanacak metin"},
+                },
+                "required": ["metin"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "panodan_oku",
+            "description": "Panodaki (clipboard) metni oku.",
             "parameters": {"type": "object", "properties": {}},
         },
     },
@@ -150,7 +242,7 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "kilo_kaydet",
-            "description": "Kullanıcının kilo değerini veritabanına kaydet.",
+            "description": "Kullanıcının kilo değerini kaydet.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -169,7 +261,7 @@ TOOLS = [
                 "type": "object",
                 "properties": {
                     "ders": {"type": "string", "enum": ["sat", "cents"], "description": "Ders adı"},
-                    "dakika": {"type": "integer", "description": "Çalışma süresi (dakika)"},
+                    "dakika": {"type": "integer", "description": "Süre (dakika)"},
                 },
                 "required": ["ders", "dakika"],
             },
@@ -201,7 +293,7 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "kilo_gecmisi",
-            "description": "Kilo kayıt geçmişini ve trendini göster.",
+            "description": "Kilo kayıt geçmişini ve trendi göster.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -214,7 +306,7 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "ozet_goster",
-            "description": "Günlük ilerleme özetini göster (kilo, çalışma, görevler, sınav geri sayımı).",
+            "description": "Günlük ilerleme özeti (kilo, çalışma, görevler, geri sayım).",
             "parameters": {"type": "object", "properties": {}},
         },
     },
@@ -222,7 +314,7 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "haftalik_ozet",
-            "description": "Haftalık istatistikleri ve çalışma detaylarını göster.",
+            "description": "Haftalık çalışma ve kilo istatistikleri.",
             "parameters": {"type": "object", "properties": {}},
         },
     },
@@ -230,11 +322,11 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "pomodoro_baslat",
-            "description": "Pomodoro çalışma zamanlayıcısı başlat (25dk çalış / 5dk mola).",
+            "description": "Pomodoro çalışma zamanlayıcısı başlat.",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "ders": {"type": "string", "enum": ["sat", "cents"], "description": "Hangi ders"},
+                    "ders": {"type": "string", "enum": ["sat", "cents"], "description": "Ders"},
                 },
                 "required": ["ders"],
             },
@@ -243,8 +335,31 @@ TOOLS = [
 ]
 
 
-def _client() -> OpenAI:
-    return OpenAI(base_url=AI_BASE_URL, api_key=GITHUB_TOKEN)
+# ─── GitHub Models API — ham httpx ────────────────────────
+
+def _api_cagri(messages: list, tools: list = None) -> dict:
+    """GitHub Models API'ye doğrudan HTTP isteği at. OpenAI SDK yok."""
+    headers = {
+        "Authorization": f"Bearer {GITHUB_TOKEN}",
+        "Content-Type": "application/json",
+    }
+
+    payload = {
+        "model": AI_MODEL,
+        "messages": messages,
+        "max_tokens": 2000,
+        "temperature": 0.7,
+    }
+
+    if tools:
+        payload["tools"] = tools
+        payload["tool_choice"] = "auto"
+
+    with httpx.Client(timeout=60) as client:
+        response = client.post(AI_API_URL, headers=headers, json=payload)
+        response.raise_for_status()
+
+    return response.json()
 
 
 def _sistem_promptu() -> str:
@@ -252,8 +367,8 @@ def _sistem_promptu() -> str:
     cents_kalan = (HEDEFLER["cents"]["sinav_tarihi"] - bugun).days
     sat_kalan = (HEDEFLER["sat"]["sinav_tarihi"] - bugun).days
 
-    cents_str = "CENT-S tamamlandı ✅" if cents_kalan < 0 else f"{cents_kalan} gün kaldı"
-    sat_str = "SAT tamamlandı ✅" if sat_kalan < 0 else f"{sat_kalan} gün kaldı"
+    cents_str = "tamamlandı ✅" if cents_kalan < 0 else f"{cents_kalan} gün kaldı"
+    sat_str = "tamamlandı ✅" if sat_kalan < 0 else f"{sat_kalan} gün kaldı"
 
     return SYSTEM_PROMPT.format(
         tarih=bugun.strftime("%d %B %Y"),
@@ -262,6 +377,8 @@ def _sistem_promptu() -> str:
     )
 
 
+# ─── Agent Loop ───────────────────────────────────────────
+
 def agent_loop(
     mesaj: str,
     ek_context: str,
@@ -269,65 +386,47 @@ def agent_loop(
     progress_callback: Optional[Callable] = None,
 ) -> str:
     """
-    Ana ajan döngüsü. AI tool çağırır → çalıştırılır → sonuç geri verilir → tekrar.
-    Görev bitene kadar devam eder (max MAX_AGENT_STEPS adım).
-
-    Args:
-        mesaj: Kullanıcının mesajı
-        ek_context: Mevcut durum bilgisi (kilo, çalışma vs.)
-        tool_executor: Tool'ları çalıştıran fonksiyon (name, args) -> result
-        progress_callback: Her adımda çağrılan bildirim fonksiyonu (opsiyonel)
-
-    Returns:
-        AI'ın son cevabı (kullanıcıya gösterilecek metin)
+    Ana ajan döngüsü — tool çağır, sonucu al, tekrar, görev bitene kadar.
+    OpenAI SDK yok, ham HTTP.
     """
-    client = _client()
-
-    messages = [
-        {"role": "system", "content": _sistem_promptu()},
-    ]
+    messages = [{"role": "system", "content": _sistem_promptu()}]
 
     if ek_context:
-        messages.append({
-            "role": "system",
-            "content": f"Kullanıcının mevcut durumu:\n{ek_context}",
-        })
+        messages.append({"role": "system", "content": f"Kullanıcının mevcut durumu:\n{ek_context}"})
 
     messages.append({"role": "user", "content": mesaj})
 
     for step in range(MAX_AGENT_STEPS):
         try:
-            response = client.chat.completions.create(
-                model=AI_MODEL,
-                messages=messages,
-                tools=TOOLS,
-                tool_choice="auto",
-                max_tokens=2000,
-                temperature=0.7,
-            )
+            data = _api_cagri(messages, TOOLS)
+        except httpx.HTTPStatusError as e:
+            logger.error(f"API HTTP hatası (adım {step}): {e.response.status_code} {e.response.text[:300]}")
+            return f"⚠️ AI servisi hata verdi (HTTP {e.response.status_code}). Biraz sonra tekrar dene."
         except Exception as e:
-            logger.error(f"AI çağrı hatası (adım {step}): {e}")
-            return f"⚠️ AI ile iletişimde sorun oluştu: {str(e)[:150]}"
+            logger.error(f"API hatası (adım {step}): {e}")
+            return f"⚠️ AI ile iletişimde sorun: {str(e)[:150]}"
 
-        choice = response.choices[0]
+        choice = data.get("choices", [{}])[0]
+        message = choice.get("message", {})
+        tool_calls = message.get("tool_calls")
 
-        # Tool çağrısı yok → görev tamamlandı, cevabı döndür
-        if not choice.message.tool_calls:
-            return choice.message.content or "🤔 Cevap oluşturulamadı."
+        # Tool çağrısı yok → görev bitti, cevabı döndür
+        if not tool_calls:
+            return message.get("content") or "🤔 Cevap oluşturulamadı."
 
-        # Tool çağrıları var → hepsini çalıştır
-        messages.append(choice.message)  # assistant mesajını ekle
+        # Assistant mesajını history'ye ekle
+        messages.append(message)
 
-        for tool_call in choice.message.tool_calls:
-            func_name = tool_call.function.name
+        # Her tool çağrısını çalıştır
+        for tc in tool_calls:
+            func_name = tc["function"]["name"]
             try:
-                func_args = json.loads(tool_call.function.arguments)
-            except json.JSONDecodeError:
+                func_args = json.loads(tc["function"]["arguments"])
+            except (json.JSONDecodeError, KeyError):
                 func_args = {}
 
             logger.info(f"🔧 Adım {step + 1}: {func_name}({func_args})")
 
-            # İlerleme bildirimi
             if progress_callback:
                 try:
                     progress_callback(step + 1, func_name, func_args)
@@ -338,34 +437,27 @@ def agent_loop(
             try:
                 result = tool_executor(func_name, func_args)
             except Exception as e:
-                result = f"❌ Tool hatası ({func_name}): {str(e)}"
+                result = f"❌ Hata ({func_name}): {str(e)}"
                 logger.error(result)
 
-            # Sonucu mesajlara ekle
+            # Sonucu ekle
             messages.append({
                 "role": "tool",
-                "tool_call_id": tool_call.id,
-                "content": str(result)[:6000],  # Token limiti için kırp
+                "tool_call_id": tc["id"],
+                "content": str(result)[:6000],
             })
 
-    # Max adıma ulaşıldı
-    return "⚠️ Görev çok karmaşık, tüm adımları tamamlayamadım. Daha spesifik sorabilir misin?"
+    return "⚠️ Görev çok karmaşık, tamamlayamadım. Daha spesifik sorabilir misin?"
 
 
-def basit_ai_cevap(prompt: str) -> str:
-    """Basit AI cevabı — tool çağrısı olmadan, hatırlatmalar için."""
+def basit_cevap(prompt: str) -> str:
+    """Basit AI cevabı — hatırlatmalar için, tool yok."""
     try:
-        client = _client()
-        response = client.chat.completions.create(
-            model=AI_MODEL,
-            messages=[
-                {"role": "system", "content": _sistem_promptu()},
-                {"role": "user", "content": prompt},
-            ],
-            max_tokens=800,
-            temperature=0.7,
-        )
-        return response.choices[0].message.content
+        data = _api_cagri([
+            {"role": "system", "content": _sistem_promptu()},
+            {"role": "user", "content": prompt},
+        ])
+        return data["choices"][0]["message"]["content"]
     except Exception as e:
-        logger.error(f"Basit AI hatası: {e}")
+        logger.error(f"Basit cevap hatası: {e}")
         return f"⚠️ AI yanıt veremedi: {str(e)[:100]}"
