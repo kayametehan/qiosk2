@@ -8,8 +8,8 @@ import logging
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from telegram.ext import Application, CommandHandler, MessageHandler, filters
 
-from bot.database import tablolari_olustur
-from bot.handlers.sohbet import mesaj_handler
+from bot.database import tablolari_olustur, onboarding_tamamlandi, profil_ayarla
+from bot.handlers.sohbet import mesaj_handler, ONBOARDING_SORULARI
 from bot.services.hatirlatici import hatirlaticilari_kur
 from config import TELEGRAM_BOT_TOKEN, TELEGRAM_USER_ID
 
@@ -24,18 +24,17 @@ logger = logging.getLogger(__name__)
 # ─── Komutlar ──────────────────────────────────────────────
 
 async def start(update, context):
-    """Bot başlangıç mesajı."""
-    await update.message.reply_text(
-        "👋 Merhaba! Ben senin kişisel AI asistanınım.\n\n"
-        "Bana her şeyi sorabilirsin:\n"
-        "• İnternette araştırma\n"
-        "• Dosya işlemleri\n"
-        "• Kilo / çalışma takibi\n"
-        "• Pomodoro zamanlayıcı\n"
-        "• Sistem bilgisi\n"
-        "• Ve daha fazlası...\n\n"
-        "Sadece yaz, ben hallederim! 🚀"
-    )
+    """Bot başlangıç mesajı — onboarding başlat veya hoşgeldin de."""
+    if not onboarding_tamamlandi():
+        # Onboarding'i sıfırla ve ilk soruyu sor
+        profil_ayarla("onboarding_adim", "0")
+        _, ilk_soru = ONBOARDING_SORULARI[0]
+        await update.message.reply_text(ilk_soru)
+    else:
+        await update.message.reply_text(
+            "👋 Tekrar merhaba! Nasıl yardımcı olabilirim?\n\n"
+            "Sadece yaz, ben hallederim! 🚀"
+        )
 
 
 async def id_goster(update, context):

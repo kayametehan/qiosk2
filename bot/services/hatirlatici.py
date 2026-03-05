@@ -50,7 +50,7 @@ async def _sabah_plani(bot):
         f"Sabah hatırlatması yap. Günaydın de, bugünkü durumu özetle, "
         f"kısa bir plan öner. Motive edici ol.\n\nDurum:\n{context}"
     )
-    mesaj = basit_cevap(prompt)
+    mesaj = await basit_cevap(prompt)
     try:
         await bot.send_message(chat_id=TELEGRAM_USER_ID, text=mesaj)
     except Exception as e:
@@ -64,7 +64,7 @@ async def _ders_hatirlatma(bot, seans: int):
         f"Ders çalışma hatırlatması yap (seans {seans}). "
         f"Bugünkü çalışma durumuna göre motive et, pomodoro öner.\n\nDurum:\n{context}"
     )
-    mesaj = basit_cevap(prompt)
+    mesaj = await basit_cevap(prompt)
     try:
         await bot.send_message(chat_id=TELEGRAM_USER_ID, text=mesaj)
     except Exception as e:
@@ -78,7 +78,7 @@ async def _ogun_hatirlatma(bot, ogun: str):
         f"Kullanıcı 75 kg hedefli, yumurta yemez, karamelli protein tozu var. "
         f"Kısa ve pratik öner."
     )
-    mesaj = basit_cevap(prompt)
+    mesaj = await basit_cevap(prompt)
     try:
         await bot.send_message(chat_id=TELEGRAM_USER_ID, text=mesaj)
     except Exception as e:
@@ -92,7 +92,7 @@ async def _gun_sonu_ozet(bot):
         f"Gün sonu özeti yap. Bugün ne yapıldı, ne eksik kaldı, yarın için öneriler. "
         f"Kısa ve yapıcı ol.\n\nDurum:\n{context}"
     )
-    mesaj = basit_cevap(prompt)
+    mesaj = await basit_cevap(prompt)
     try:
         await bot.send_message(chat_id=TELEGRAM_USER_ID, text=mesaj)
     except Exception as e:
