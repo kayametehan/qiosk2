@@ -389,6 +389,120 @@ TOOLS = [
             "parameters": {"type": "object", "properties": {}},
         },
     },
+    # --- Excel ---
+    {
+        "type": "function",
+        "function": {
+            "name": "excel_oku",
+            "description": "Excel (.xlsx) dosyasını oku. Tablo formatında gösterir.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "yol": {"type": "string", "description": "Excel dosya yolu"},
+                    "sayfa": {"type": "string", "description": "Sayfa adı (opsiyonel)"},
+                },
+                "required": ["yol"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "excel_olustur",
+            "description": "Yeni Excel dosyası oluştur. Başlıklar ve veriler ile.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "yol": {"type": "string", "description": "Dosya yolu (.xlsx)"},
+                    "basliklar": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Sütun başlıkları",
+                    },
+                    "veriler": {
+                        "type": "array",
+                        "items": {"type": "array", "items": {}},
+                        "description": "Satır verileri [[v1,v2,...], ...]",
+                    },
+                    "sayfa_adi": {"type": "string", "description": "Sayfa adı"},
+                },
+                "required": ["yol", "basliklar"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "excel_duzenle",
+            "description": "Excel dosyasını düzenle. Hücre değiştir, satır ekle/sil.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "yol": {"type": "string", "description": "Dosya yolu (.xlsx)"},
+                    "islemler": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "hucre": {"type": "string", "description": "Hücre (ör: A1)"},
+                                "deger": {"type": "string", "description": "Yeni değer"},
+                                "satir_ekle": {
+                                    "type": "array", "items": {},
+                                    "description": "Eklenecek satır",
+                                },
+                                "satir_sil": {"type": "integer", "description": "Silinecek satır no"},
+                            },
+                        },
+                        "description": "Yapılacak işlemler",
+                    },
+                },
+                "required": ["yol", "islemler"],
+            },
+        },
+    },
+    # --- Hafıza ---
+    {
+        "type": "function",
+        "function": {
+            "name": "hafiza_notu_ekle",
+            "description": "Uzun süreli hafızaya önemli bir bilgi kaydet. Kullanıcı tercihleri, önemli olaylar, öğrenilen bilgiler için kullan.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "kategori": {
+                        "type": "string",
+                        "enum": ["tercih", "bilgi", "olay", "plan", "not"],
+                        "description": "Not kategorisi",
+                    },
+                    "icerik": {"type": "string", "description": "Kaydedilecek bilgi"},
+                    "onem": {"type": "integer", "description": "Önem derecesi 1-10 (varsayılan 5)"},
+                },
+                "required": ["kategori", "icerik"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "hafiza_notlari_goster",
+            "description": "Uzun süreli hafıza notlarını listele.",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "hafiza_notu_sil",
+            "description": "Uzun süreli hafızadan bir notu sil.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "hafiza_id": {"type": "integer", "description": "Silinecek notun ID'si"},
+                },
+                "required": ["hafiza_id"],
+            },
+        },
+    },
     # --- Skill Yönetimi & Kendini Geliştirme ---
     {
         "type": "function",
@@ -502,11 +616,16 @@ def _sistem_promptu() -> str:
             profil_satirlari.append(f"- {label}: {profil[key]}")
     profil_bilgisi = "\n".join(profil_satirlari) if profil_satirlari else "Henüz tanışma yapılmadı"
 
+    # Uzun süreli hafıza
+    from bot.database import hafiza_ozet_metni
+    hafiza_notlari = hafiza_ozet_metni()
+
     return SYSTEM_PROMPT.format(
         tarih=bugun.strftime("%d %B %Y"),
         cents_kalan=cents_str,
         sat_kalan=sat_str,
         profil_bilgisi=profil_bilgisi,
+        hafiza_notlari=hafiza_notlari,
     )
 
 
@@ -521,16 +640,19 @@ async def agent_loop(
     """
     Ana ajan döngüsü — async, konuşma hafızalı.
     """
-    from bot.database import sohbet_gecmisi_getir, sohbet_kaydet
+    from bot.database import sohbet_ozet_getir, sohbet_kaydet, sohbet_gecmisi_temizle_eski
     from bot.services.skill_manager import skill_toollarini_getir
+
+    # Eski mesajları temizle (DB şişmesin)
+    sohbet_gecmisi_temizle_eski(100)
 
     messages = [{"role": "system", "content": _sistem_promptu()}]
 
     if ek_context:
         messages.append({"role": "system", "content": f"Kullanıcının mevcut durumu:\n{ek_context}"})
 
-    # Konuşma hafızasını yükle (son 30 mesaj)
-    gecmis = sohbet_gecmisi_getir(30)
+    # Konuşma hafızası — sadece user+assistant mesajları (tool chains atlanır → token tasarrufu)
+    gecmis = sohbet_ozet_getir(20)
     if gecmis:
         messages.extend(gecmis)
 

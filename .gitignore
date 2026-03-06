@@ -11,3 +11,5 @@ venv/
 *.egg-info/
 dist/
 build/
+
+!bot/skills/__init__.py

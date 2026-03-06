@@ -107,6 +107,17 @@ def tablolari_olustur():
             )
         """)
 
+        # ─── Uzun Süreli Hafıza ──────────────────────
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS uzun_hafiza (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                kategori TEXT NOT NULL,
+                icerik TEXT NOT NULL,
+                onem INTEGER DEFAULT 5,
+                created_at TEXT DEFAULT (datetime('now', 'localtime'))
+            )
+        """)
+
 
 # ═══════════════════════════════════════════════════════════
 # KİLO İŞLEMLERİ
@@ -318,11 +329,91 @@ def sohbet_gecmisi_getir(limit: int = 30) -> list:
     return mesajlar
 
 
+def sohbet_ozet_getir(limit: int = 20) -> list:
+    """Son N mesajı getir — sadece user ve assistant (tool_calls olmayan).
+    Tool çağrı zincirleri atlanır → dramatik token tasarrufu."""
+    with baglanti() as conn:
+        c = conn.cursor()
+        c.execute(
+            """SELECT role, content FROM sohbet_gecmisi
+               WHERE (role = 'user' OR (role = 'assistant' AND tool_calls_json IS NULL))
+               AND content IS NOT NULL AND content != ''
+               ORDER BY id DESC LIMIT ?""",
+            (limit,),
+        )
+        rows = c.fetchall()
+
+    return [{"role": r["role"], "content": r["content"]} for r in reversed(rows)]
+
+
+def sohbet_gecmisi_temizle_eski(sakla: int = 100):
+    """Eski sohbet kayıtlarını temizle, son N tanesini sakla."""
+    with baglanti() as conn:
+        c = conn.cursor()
+        c.execute(
+            """DELETE FROM sohbet_gecmisi WHERE id NOT IN
+               (SELECT id FROM sohbet_gecmisi ORDER BY id DESC LIMIT ?)""",
+            (sakla,),
+        )
+        return c.rowcount
+
+
 def sohbet_temizle():
     """Sohbet geçmişini temizle."""
     with baglanti() as conn:
         c = conn.cursor()
         c.execute("DELETE FROM sohbet_gecmisi")
+
+
+# ═══════════════════════════════════════════════════════════
+# UZUN SÜRELİ HAFIZA
+# ═══════════════════════════════════════════════════════════
+
+def hafiza_kaydet(kategori: str, icerik: str, onem: int = 5) -> int:
+    """Uzun süreli hafızaya not ekle. Döndürülen ID ile silinebilir."""
+    with baglanti() as conn:
+        c = conn.cursor()
+        c.execute(
+            "INSERT INTO uzun_hafiza (kategori, icerik, onem) VALUES (?, ?, ?)",
+            (kategori, icerik, min(max(onem, 1), 10)),
+        )
+        return c.lastrowid
+
+
+def hafizalari_getir(limit: int = 30) -> list:
+    """Uzun süreli hafıza notlarını önem sırasına göre getir."""
+    with baglanti() as conn:
+        c = conn.cursor()
+        c.execute(
+            """SELECT id, kategori, icerik, onem, created_at
+               FROM uzun_hafiza ORDER BY onem DESC, id DESC LIMIT ?""",
+            (limit,),
+        )
+        rows = c.fetchall()
+    return [
+        {"id": r["id"], "kategori": r["kategori"], "icerik": r["icerik"],
+         "onem": r["onem"], "tarih": r["created_at"]}
+        for r in rows
+    ]
+
+
+def hafiza_sil(hafiza_id: int) -> bool:
+    """Uzun süreli hafıza notunu sil."""
+    with baglanti() as conn:
+        c = conn.cursor()
+        c.execute("DELETE FROM uzun_hafiza WHERE id = ?", (hafiza_id,))
+        return c.rowcount > 0
+
+
+def hafiza_ozet_metni() -> str:
+    """Uzun süreli hafıza notlarını kompakt metin olarak döndür (system prompt için)."""
+    notlar = hafizalari_getir(30)
+    if not notlar:
+        return "Henüz uzun süreli hafıza notu yok."
+    satirlar = []
+    for n in notlar:
+        satirlar.append(f"[{n['kategori']}] {n['icerik']}")
+    return "\n".join(satirlar)
 
 
 # ═══════════════════════════════════════════════════════════

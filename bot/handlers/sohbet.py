@@ -1,11 +1,15 @@
 """
 Sohbet Handler — Ana mesaj işleyici.
-Onboarding tanışma, konuşma hafızası, 30+ tool executor, async.
+Onboarding tanışma, konuşma hafızası, sesli mesaj, ekran görüntüsü,
+onay mekanizması, Excel, hafıza, 40+ tool executor, async.
 """
 
 import asyncio
 import logging
+import os
+import tempfile
 from datetime import date
+from functools import partial
 
 from telegram import Update
 from telegram.ext import ContextTypes
@@ -22,6 +26,9 @@ from bot.database import (
     gunluk_kalori,
     gunluk_ogunler,
     gunun_gorevleri,
+    hafiza_kaydet,
+    hafiza_sil,
+    hafizalari_getir,
     haftalik_calisma,
     haftalik_gunluk_detay,
     kilo_gecmisi,
@@ -34,6 +41,7 @@ from bot.database import (
     son_kilo,
 )
 from bot.services.ai_service import agent_loop
+from bot.services.excel_service import excel_duzenle, excel_oku, excel_olustur
 from bot.services.system_service import (
     dosya_ara,
     dosya_listele,
@@ -64,6 +72,29 @@ logger = logging.getLogger(__name__)
 
 # Aktif pomodoro'lar
 aktif_pomodorolar = {}
+
+# Bekleyen ekran görüntüleri (Telegram'a fotoğraf olarak gönderilecek)
+_bekleyen_fotograflar = []
+
+# Onay bekleyen işlemler: {user_id: {"func_name": ..., "func_args": ..., "aciklama": ...}}
+bekleyen_islemler = {}
+
+# Onay gerektiren tehlikeli tool'lar
+ONAY_GEREKEN_TOOLLAR = {"islem_kapat", "kendi_kodunu_duzenle"}
+ONAY_KELIMELERI = {"evet", "onay", "onayla", "yap", "tamam", "ok", "olur"}
+IPTAL_KELIMELERI = {"hayır", "iptal", "vazgeç", "yok", "yapma"}
+
+
+def _onay_gerekli_mi(func_name: str, func_args: dict) -> bool:
+    """Bu tool çağrısı onay gerektiriyor mu?"""
+    if func_name in ONAY_GEREKEN_TOOLLAR:
+        return True
+    if func_name == "komut_calistir":
+        komut = func_args.get("komut", "").lower()
+        tehlikeli = ["rm ", "rm -", "rmdir", "del ", "format ", "mkfs",
+                     "dd if=", "shutdown", "reboot", "kill ", "killall"]
+        return any(d in komut for d in tehlikeli)
+    return False
 
 
 # ═══════════════════════════════════════════════════════════
@@ -211,8 +242,28 @@ def _kullanici_contexti() -> str:
 # TOOL EXECUTOR — 30+ tool
 # ═══════════════════════════════════════════════════════════
 
-def tool_calistir(func_name: str, func_args: dict) -> str:
-    """Tool adını ve argümanlarını alıp ilgili fonksiyonu çağırır."""
+def tool_calistir(func_name: str, func_args: dict, user_id: int = 0) -> str:
+    """Tool adını ve argümanlarını alıp ilgili fonksiyonu çağırır.
+    user_id verilirse tehlikeli işlemlerde onay mekanizması devreye girer.
+    """
+
+    # ── Onay mekanizması ──
+    if user_id and _onay_gerekli_mi(func_name, func_args):
+        aciklama_map = {
+            "islem_kapat": f"🔴 '{func_args.get('islem_adi', '?')}' işlemi kapatılacak",
+            "kendi_kodunu_duzenle": f"📝 '{func_args.get('dosya_yolu', '?')}' dosyası düzenlenecek",
+            "komut_calistir": f"💻 Tehlikeli komut: {func_args.get('komut', '?')[:80]}",
+        }
+        aciklama = aciklama_map.get(func_name, f"⚠️ {func_name} çağrılacak")
+        bekleyen_islemler[user_id] = {
+            "func_name": func_name,
+            "func_args": func_args,
+            "aciklama": aciklama,
+        }
+        return (
+            f"⚠️ ONAY GEREKLİ!\n{aciklama}\n\n"
+            f"Bu işlemi yapmamı onaylıyor musun? (evet/hayır)"
+        )
 
     # === Web ===
     if func_name == "web_ara":
@@ -246,11 +297,28 @@ def tool_calistir(func_name: str, func_args: dict) -> str:
     elif func_name == "islem_kapat":
         return islem_kapat(func_args["islem_adi"])
     elif func_name == "ekran_goruntusu":
-        return ekran_goruntusu(func_args.get("kayit_yolu"))
+        sonuc = ekran_goruntusu(func_args.get("kayit_yolu"))
+        # Dosya yolunu çıkar ve fotoğraf listesine ekle (Telegram'a gönderilecek)
+        if "kaydedildi:" in sonuc:
+            yol = sonuc.split("kaydedildi: ", 1)[-1].strip()
+            if os.path.exists(yol):
+                _bekleyen_fotograflar.append(yol)
+        return sonuc
     elif func_name == "panoya_kopyala":
         return panoya_kopyala(func_args["metin"])
     elif func_name == "panodan_oku":
         return panodan_oku()
+
+    # === Excel ===
+    elif func_name == "excel_oku":
+        return excel_oku(func_args["yol"], func_args.get("sayfa"))
+    elif func_name == "excel_olustur":
+        return excel_olustur(
+            func_args["yol"], func_args["basliklar"],
+            func_args.get("veriler"), func_args.get("sayfa_adi", "Sayfa1"),
+        )
+    elif func_name == "excel_duzenle":
+        return excel_duzenle(func_args["yol"], func_args["islemler"])
 
     # === Kişisel Takip ===
     elif func_name == "kilo_kaydet":
@@ -342,6 +410,31 @@ def tool_calistir(func_name: str, func_args: dict) -> str:
     elif func_name == "sohbet_temizle":
         _sohbet_temizle()
         return "🧹 Konuşma geçmişi temizlendi. Yeni bir sayfa açtık!"
+
+    # === Hafıza ===
+    elif func_name == "hafiza_notu_ekle":
+        nid = hafiza_kaydet(
+            func_args["kategori"], func_args["icerik"],
+            func_args.get("onem", 5),
+        )
+        return f"🧠 Hafızaya kaydedildi (ID: {nid}): [{func_args['kategori']}] {func_args['icerik']}"
+
+    elif func_name == "hafiza_notlari_goster":
+        notlar = hafizalari_getir(30)
+        if not notlar:
+            return "🧠 Uzun süreli hafızada henüz not yok."
+        cikti = "🧠 Uzun Süreli Hafıza Notları:\n\n"
+        for n in notlar:
+            cikti += f"  [{n['id']}] ⭐{n['onem']} [{n['kategori']}] {n['icerik']}\n"
+            cikti += f"      📅 {n['tarih']}\n"
+        return cikti
+
+    elif func_name == "hafiza_notu_sil":
+        ok = hafiza_sil(func_args["hafiza_id"])
+        return (
+            f"✅ Hafıza notu #{func_args['hafiza_id']} silindi."
+            if ok else f"❌ Hafıza notu #{func_args['hafiza_id']} bulunamadı."
+        )
 
     # === Skill Yönetimi ===
     elif func_name == "skill_olustur":
@@ -473,11 +566,109 @@ async def _pomodoro_dongusu(update: Update, context: ContextTypes.DEFAULT_TYPE, 
 
 
 # ═══════════════════════════════════════════════════════════
+# ORTAK MESAJ İŞLEME
+# ═══════════════════════════════════════════════════════════
+
+async def _mesaji_isle(update: Update, context: ContextTypes.DEFAULT_TYPE,
+                       mesaj: str, bekle_msg=None):
+    """Metin veya ses mesajını işle — ortak mantık."""
+    global _bekleyen_fotograflar
+
+    user_id = update.effective_user.id
+
+    # ── Onay bekleyen işlem var mı? ──
+    if user_id in bekleyen_islemler:
+        if mesaj.lower().strip() in ONAY_KELIMELERI:
+            islem = bekleyen_islemler.pop(user_id)
+            try:
+                sonuc = tool_calistir(islem["func_name"], islem["func_args"], user_id=0)
+            except Exception as e:
+                sonuc = f"❌ İşlem hatası: {str(e)}"
+            if bekle_msg:
+                try:
+                    await bekle_msg.delete()
+                except Exception:
+                    pass
+            await update.message.reply_text(f"✅ İşlem yapıldı:\n\n{sonuc}")
+            return
+        elif mesaj.lower().strip() in IPTAL_KELIMELERI:
+            bekleyen_islemler.pop(user_id)
+            if bekle_msg:
+                try:
+                    await bekle_msg.delete()
+                except Exception:
+                    pass
+            await update.message.reply_text("❌ İşlem iptal edildi.")
+            return
+        else:
+            # Farklı mesaj geldi — bekleyen işlemi iptal et, yeni mesajı işle
+            bekleyen_islemler.pop(user_id)
+
+    # ── Onboarding kontrolü ──
+    if not onboarding_tamamlandi():
+        handled = await _onboarding_handler(update, context, mesaj)
+        if handled:
+            if bekle_msg:
+                try:
+                    await bekle_msg.delete()
+                except Exception:
+                    pass
+            return
+
+    # ── AI Ajan ──
+    if not bekle_msg:
+        bekle_msg = await update.message.reply_text("🤔 Düşünüyorum...")
+
+    async def ilerleme_goster(adim: int, tool_adi: str, args: dict):
+        try:
+            await bekle_msg.edit_text(f"🔧 Adım {adim}: {tool_adi}...")
+        except Exception:
+            pass
+
+    ctx = _kullanici_contexti()
+    _bekleyen_fotograflar.clear()
+
+    # user_id'li executor (onay mekanizması için)
+    _tool_executor = partial(tool_calistir, user_id=user_id)
+
+    cevap = await agent_loop(mesaj, ctx, _tool_executor, ilerleme_goster)
+
+    # Pomodoro özel case
+    if cevap.startswith("⏱️ POMODORO:"):
+        ders = cevap.split(":")[1]
+        await bekle_msg.delete()
+        asyncio.create_task(_pomodoro_dongusu(update, context, ders))
+        return
+
+    # Cevabı gönder (4096 char limit)
+    try:
+        await bekle_msg.delete()
+    except Exception:
+        pass
+
+    if len(cevap) <= 4096:
+        await update.message.reply_text(cevap)
+    else:
+        parcalar = [cevap[i : i + 4096] for i in range(0, len(cevap), 4096)]
+        for parca in parcalar:
+            await update.message.reply_text(parca)
+
+    # Bekleyen ekran görüntülerini fotoğraf olarak gönder
+    for foto_yol in _bekleyen_fotograflar:
+        try:
+            with open(foto_yol, "rb") as f:
+                await update.message.reply_photo(photo=f, caption="📸 Ekran görüntüsü")
+        except Exception as e:
+            logger.error(f"Fotoğraf gönderilemedi: {e}")
+    _bekleyen_fotograflar.clear()
+
+
+# ═══════════════════════════════════════════════════════════
 # ANA MESAJ HANDLER
 # ═══════════════════════════════════════════════════════════
 
 async def mesaj_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Her mesajı işle: onboarding → AI ajan."""
+    """Her metin mesajını işle: onboarding → onay kontrolü → AI ajan."""
 
     if not update.message or not update.message.text:
         return
@@ -491,39 +682,94 @@ async def mesaj_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not mesaj:
         return
 
-    # ── Onboarding kontrolü ──
-    if not onboarding_tamamlandi():
-        handled = await _onboarding_handler(update, context, mesaj)
-        if handled:
-            return
+    await _mesaji_isle(update, context, mesaj)
 
-    # ── AI Ajan ──
-    bekle = await update.message.reply_text("🤔 Düşünüyorum...")
 
-    # Async progress callback
-    async def ilerleme_goster(adim: int, tool_adi: str, args: dict):
-        try:
-            await bekle.edit_text(f"🔧 Adım {adim}: {tool_adi}...")
-        except Exception:
-            pass
+# ═══════════════════════════════════════════════════════════
+# SESLİ MESAJ HANDLER
+# ═══════════════════════════════════════════════════════════
 
-    ctx = _kullanici_contexti()
+async def sesli_mesaj_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Sesli mesajları işle: indir → çevir → metne dönüştür → AI'ya gönder."""
 
-    cevap = await agent_loop(mesaj, ctx, tool_calistir, ilerleme_goster)
-
-    # Pomodoro özel case
-    if cevap.startswith("⏱️ POMODORO:"):
-        ders = cevap.split(":")[1]
-        await bekle.delete()
-        asyncio.create_task(_pomodoro_dongusu(update, context, ders))
+    if not update.message:
         return
 
-    # Cevabı gönder (4096 char limit)
-    await bekle.delete()
+    if TELEGRAM_USER_ID and update.effective_user.id != TELEGRAM_USER_ID:
+        await update.message.reply_text("⛔ Yetkin yok.")
+        return
 
-    if len(cevap) <= 4096:
-        await update.message.reply_text(cevap)
-    else:
-        parcalar = [cevap[i : i + 4096] for i in range(0, len(cevap), 4096)]
-        for parca in parcalar:
-            await update.message.reply_text(parca)
+    bekle = await update.message.reply_text("🎤 Sesli mesaj işleniyor...")
+
+    try:
+        voice = update.message.voice or update.message.audio
+        if not voice:
+            await bekle.edit_text("❌ Sesli mesaj bulunamadı.")
+            return
+
+        # Dosyayı indir
+        file = await context.bot.get_file(voice.file_id)
+        ogg_path = tempfile.mktemp(suffix=".ogg")
+        await file.download_to_drive(ogg_path)
+
+        wav_path = ogg_path.replace(".ogg", ".wav")
+
+        # OGG → WAV dönüşümü (pydub + ffmpeg)
+        try:
+            from pydub import AudioSegment
+
+            audio = AudioSegment.from_ogg(ogg_path)
+            audio.export(wav_path, format="wav")
+        except ImportError:
+            await bekle.edit_text(
+                "❌ Sesli mesaj desteği için gerekli paketler eksik.\n"
+                "Kur: pip install pydub SpeechRecognition\n"
+                "Ve ffmpeg yükle: brew install ffmpeg"
+            )
+            return
+        except Exception as e:
+            await bekle.edit_text(
+                f"❌ Ses dönüştürme hatası.\n"
+                f"ffmpeg kurulu mu? (brew install ffmpeg)\n{str(e)[:100]}"
+            )
+            return
+
+        # Ses → Metin (Google Speech Recognition — ücretsiz, Türkçe)
+        try:
+            import speech_recognition as sr
+
+            recognizer = sr.Recognizer()
+            with sr.AudioFile(wav_path) as source:
+                audio_data = recognizer.record(source)
+            metin = recognizer.recognize_google(audio_data, language="tr-TR")
+        except ImportError:
+            await bekle.edit_text(
+                "❌ SpeechRecognition paketi eksik.\nKur: pip install SpeechRecognition"
+            )
+            return
+        except Exception as e:
+            err_str = str(e).lower()
+            if "could not understand" in err_str or "unknownvalue" in err_str:
+                await bekle.edit_text("❌ Ses anlaşılamadı. Lütfen daha net konuşup tekrar dene.")
+            else:
+                await bekle.edit_text(f"❌ Ses tanıma hatası: {str(e)[:120]}")
+            return
+        finally:
+            # Geçici dosyaları temizle
+            for p in [ogg_path, wav_path]:
+                try:
+                    os.unlink(p)
+                except OSError:
+                    pass
+
+        await bekle.edit_text(f'🎤 Anlaşılan: "{metin}"\n\n🤔 Düşünüyorum...')
+
+        # AI'ya metin olarak gönder
+        await _mesaji_isle(update, context, metin, bekle_msg=bekle)
+
+    except Exception as e:
+        logger.error(f"Sesli mesaj hatası: {e}")
+        try:
+            await bekle.edit_text(f"❌ Sesli mesaj işlenemedi: {str(e)[:100]}")
+        except Exception:
+            pass
