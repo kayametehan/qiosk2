@@ -212,9 +212,11 @@ def main():
     if not _paket_kontrol():
         if not _bagimliliklari_kur():
             return
-        # Paketler yeni kuruldu, modül cache'i eski — Python'u yeniden başlat
+        # Paketler yeni kuruldu — subprocess ile temiz yeniden başlat
+        # (os.execv Windows'ta düzgün çalışmıyor, iki process stdin'den okur)
         print("🔄 Yeniden başlatılıyor...\n")
-        os.execv(sys.executable, [sys.executable] + sys.argv)
+        ret = subprocess.call([sys.executable] + sys.argv)
+        sys.exit(ret)
 
     # 2) .env var mı?
     if not ENV_PATH.exists():
