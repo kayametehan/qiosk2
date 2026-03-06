@@ -15,7 +15,7 @@ GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
 TELEGRAM_USER_ID = int(os.getenv("TELEGRAM_USER_ID", "0"))
 
 # ─── AI Model ─────────────────────────────────────────────
-AI_MODEL = "openai/gpt-4o-mini"
+AI_MODEL = "Anthropic/claude-sonnet-4-6"
 AI_API_URL = "https://models.github.ai/inference/chat/completions"
 
 # ─── Ajan ──────────────────────────────────────────────────
